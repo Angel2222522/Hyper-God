@@ -32,13 +32,13 @@ fun fileSha256(file: File): String {
 val pinnedAssets = listOf(
     PinnedAsset(
         "src/main/assets/tessdata/ell.traineddata",
-        "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/a8ba5063ab8013372a20e300da0c97ee46b92b07/ell.traineddata",
+        "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/65727574dfcd264acbb0c3e07860e4e9e9b22185/ell.traineddata",
         1_419_514L,
         "4fba8a0b461038d51f1c20d043d4f2ac38c4e778f1b90830847f7bd8fa3ba726"
     ),
     PinnedAsset(
         "src/main/assets/tessdata/eng.traineddata",
-        "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/a8ba5063ab8013372a20e300da0c97ee46b92b07/eng.traineddata",
+        "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/65727574dfcd264acbb0c3e07860e4e9e9b22185/eng.traineddata",
         4_113_088L,
         "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
     ),

@@ -33,6 +33,23 @@ class DocumentRelationshipSuggestionEngineTest {
         assertTrue(suggestions.any { it.documentId == older.id && it.otherDocumentId == newer.id && it.kind == DocumentSuggestionKind.OLDER_VERSION })
     }
 
+    @Test
+    fun largeDuplicateGroupIsBounded() {
+        val hash = "b".repeat(64)
+        val documents = (0 until 1_000).map { index ->
+            document(
+                id = DocumentFingerprint.newDocumentId(hash, index.toString().padStart(32, '0')),
+                title = "Κοινός τίτλος",
+                provider = "Κοινός φορέας",
+                issuedDate = "2026-01-01"
+            )
+        }
+
+        val suggestions = DocumentRelationshipSuggestionEngine.evaluate(documents)
+
+        assertTrue(suggestions.size == DocumentRelationshipSuggestionEngine.MAX_SUGGESTIONS)
+    }
+
     private fun document(id: String, title: String, provider: String, issuedDate: String?) = DocumentEntity(
         id = id,
         title = title,

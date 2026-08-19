@@ -31,6 +31,7 @@ object DocumentRelationshipSuggestionEngine {
         }.groupBy({ it.first }, { it.second })
         exactGroups.values.filter { it.size > 1 }.forEach { group ->
             addPairwise(group, output, DocumentSuggestionKind.EXACT_DUPLICATE, "Ίδιο κρυπτογραφικά επαληθευμένο περιεχόμενο", MetadataConfidence.HIGH)
+            if (output.size >= MAX_SUGGESTIONS) return output.toList()
         }
 
         documents.filter { !it.protocolNumber.isNullOrBlank() }
@@ -39,6 +40,7 @@ object DocumentRelationshipSuggestionEngine {
             .filter { group -> group.size > 1 && group.first().protocolNumber.orEmpty().length >= 4 }
             .forEach { group ->
                 addPairwise(group, output, DocumentSuggestionKind.SAME_PROTOCOL, "Ίδιος αριθμός πρωτοκόλλου", MetadataConfidence.HIGH)
+                if (output.size >= MAX_SUGGESTIONS) return output.toList()
             }
 
         documents.groupBy { document ->
@@ -46,9 +48,10 @@ object DocumentRelationshipSuggestionEngine {
             val provider = normalize(document.provider)
             if (title.length >= 6 && provider.length >= 3) "$title|$provider" else ""
         }.filterKeys { it.isNotBlank() }.values.filter { it.size > 1 }.forEach { group ->
-            group.forEach { left ->
-                group.filter { it.id != left.id }.forEach { right ->
-                    if (output.any { it.documentId == left.id && it.otherDocumentId == right.id }) return@forEach
+            for (left in group) {
+                for (right in group) {
+                    if (left.id == right.id) continue
+                    if (output.any { it.documentId == left.id && it.otherDocumentId == right.id }) continue
                     val leftDate = left.issuedDate.toLocalDateOrNull()
                     val rightDate = right.issuedDate.toLocalDateOrNull()
                     val kind = when {
@@ -62,6 +65,7 @@ object DocumentRelationshipSuggestionEngine {
                         else -> "Ίδιος τίτλος και φορέας"
                     }
                     output += DocumentRelationshipSuggestion(left.id, right.id, kind, reason, MetadataConfidence.MEDIUM)
+                    if (output.size >= MAX_SUGGESTIONS) return output.toList()
                 }
             }
         }
@@ -76,9 +80,11 @@ object DocumentRelationshipSuggestionEngine {
         reason: String,
         confidence: String
     ) {
-        group.forEach { left ->
-            group.filter { it.id != left.id }.forEach { right ->
+        for (left in group) {
+            for (right in group) {
+                if (left.id == right.id) continue
                 output += DocumentRelationshipSuggestion(left.id, right.id, kind, reason, confidence)
+                if (output.size >= MAX_SUGGESTIONS) return
             }
         }
     }
@@ -90,4 +96,6 @@ object DocumentRelationshipSuggestionEngine {
         .trim()
 
     private fun String?.toLocalDateOrNull(): LocalDate? = this?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+
+    internal const val MAX_SUGGESTIONS = 200
 }

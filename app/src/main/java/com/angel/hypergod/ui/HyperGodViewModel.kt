@@ -32,7 +32,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.withContext
 
 class HyperGodViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = HyperGodRepository(application)
@@ -57,7 +60,11 @@ class HyperGodViewModel(application: Application) : AndroidViewModel(application
     val allDocuments: StateFlow<List<DocumentSummary>> = repository.allDocuments()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val relationshipSuggestions = allDocuments
-        .map(DocumentRelationshipSuggestionEngine::evaluate)
+        .mapLatest { documents ->
+            withContext(Dispatchers.Default) {
+                DocumentRelationshipSuggestionEngine.evaluate(documents)
+            }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val cases: StateFlow<List<CaseEntity>> = repository.cases()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -217,11 +224,15 @@ class HyperGodViewModel(application: Application) : AndroidViewModel(application
         }
         beginOperation()
         try {
-            _groundedAnswer.value = GroundedAnswerEngine.answer(
-                question = cleanQuestion,
-                documents = repository.allDocumentEntities(),
-                cases = cases.value
-            )
+            val localDocuments = repository.allDocumentEntities()
+            val localCases = cases.value
+            _groundedAnswer.value = withContext(Dispatchers.Default) {
+                GroundedAnswerEngine.answer(
+                    question = cleanQuestion,
+                    documents = localDocuments,
+                    cases = localCases
+                )
+            }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {

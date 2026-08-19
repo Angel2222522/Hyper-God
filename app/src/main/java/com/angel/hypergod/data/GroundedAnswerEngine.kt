@@ -68,10 +68,10 @@ object GroundedAnswerEngine {
             )
         }
 
-        val ranked = documents.mapNotNull { document ->
+        val ranked: List<Triple<DocumentEntity, Int, String>> = documents.mapNotNull { document ->
             val searchable = normalize(listOf(document.title, document.originalFileName, document.provider, document.category, document.tags, document.protocolNumber.orEmpty(), document.ocrText).joinToString(" "))
-            val score = tokens.sumOf { token ->
-                when {
+            val score: Int = tokens.fold(0) { total, token ->
+                total + when {
                     token.length < 2 -> 0
                     normalize(document.title).contains(token) -> 6
                     normalize(document.protocolNumber.orEmpty()).contains(token) -> 6
@@ -80,7 +80,7 @@ object GroundedAnswerEngine {
                     else -> 0
                 }
             }
-            if (score > 0) Triple(document, score, evidenceExcerpt(document, tokens)) else null
+            if (score > 0) Triple<DocumentEntity, Int, String>(document, score, evidenceExcerpt(document, tokens)) else null
         }.sortedByDescending { it.second }.take(5)
 
         if (ranked.isEmpty()) return unknown()

@@ -45,6 +45,23 @@ class GroundedAnswerEngineTest {
         assertTrue(answer.sources.single().caseId == "case")
     }
 
+    @Test
+    fun genericRetrievalRanksDocumentAndReturnsItsEvidence() {
+        val protocolDocument = document("protocol", "Απόφαση επιδόματος", expiry = null, confidence = MetadataConfidence.NONE)
+            .copy(provider = "Δήμος Αθηναίων", protocolNumber = "ΑΠ-42")
+        val unrelated = document("other", "Λογαριασμός ρεύματος", expiry = null, confidence = MetadataConfidence.NONE)
+
+        val answer = GroundedAnswerEngine.answer(
+            "Ποια απόφαση έχει πρωτόκολλο ΑΠ-42;",
+            listOf(unrelated, protocolDocument),
+            emptyList()
+        )
+
+        assertTrue(answer.hasEvidence)
+        assertTrue(answer.sources.first().documentId == "protocol")
+        assertTrue(answer.sources.first().excerpt.contains("ΑΠ-42"))
+    }
+
     private fun document(id: String, title: String, expiry: String?, confidence: String) = DocumentEntity(
         id = id,
         title = title,

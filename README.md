@@ -41,5 +41,4 @@
 
 Τα document bytes και το προσωπικό μητρώο είναι κρυπτογραφημένα. Η Room database/FTS είναι app-private αλλά όχι SQLCipher-encrypted· OCR και metadata θεωρούνται ευαίσθητα και δεν εξάγονται ή αποστέλλονται αυτόματα. Τα ZIP/PDF exports είναι σκόπιμα plaintext και επισημαίνονται ως τέτοια.
 
-Δες [Capability matrix](docs/CAPABILITY_MATRIX.md), [Architecture](docs/ARCHITECTURE.md), [Security](docs/SECURITY_PRIVACY.md), [Features](docs/FEATURE_INVENTORY.md) και [Testing](docs/TESTING_REPORT.md).
-
+Δες [Capability matrix](docs/CAPABILITY_MATRIX.md), [Architecture](docs/ARCHITECTURE.md), [Security](docs/SECURITY_PRIVACY.md), [πλήρη security scan](docs/security-scan/report.md), [Features](docs/FEATURE_INVENTORY.md) και [Testing](docs/TESTING_REPORT.md).

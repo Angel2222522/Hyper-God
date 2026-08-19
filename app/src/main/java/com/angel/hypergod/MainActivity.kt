@@ -272,8 +272,9 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleIncomingIntent(incoming: Intent?) {
-        if (incoming?.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) return
-        val uris = runCatching { sharedUris(incoming).distinct() }
+        val intent = incoming ?: return
+        if (intent.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) return
+        val uris = runCatching { sharedUris(intent).distinct() }
             .getOrElse {
                 showAuthMessage("Η άλλη εφαρμογή έστειλε μη έγκυρα στοιχεία εισαγωγής.")
                 return
@@ -289,7 +290,7 @@ class MainActivity : FragmentActivity() {
             showAuthMessage("Υπάρχει ήδη εισαγωγή από άλλη εφαρμογή σε αναμονή. Αποδέξου ή απόρριψέ την πρώτα.")
             return
         }
-        val key = incoming?.action.orEmpty() + ":" + uris.joinToString("|")
+        val key = intent.action.orEmpty() + ":" + uris.joinToString("|")
         if (uris.isNotEmpty() && key != lastIncomingIntentKey) {
             lastIncomingIntentKey = key
             pendingExternalShareUris = uris

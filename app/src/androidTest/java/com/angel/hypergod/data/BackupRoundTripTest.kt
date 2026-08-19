@@ -71,21 +71,23 @@ class BackupRoundTripTest {
     }
 
     @Test
-    fun backupCryptoRoundTripAndWrongPasswordAreRejected() = runBlocking {
-        val source = context.cacheDir.resolve("share/backup-test-source.bin").apply { parentFile?.mkdirs(); writeText("payload") }
-        val encrypted = context.cacheDir.resolve("share/backup-test-encrypted.bin").apply { createNewFile() }
-        val encryptedUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", encrypted)
-        BackupCrypto.encryptFile(source, context, encryptedUri, password.toCharArray())
-        val restored = context.cacheDir.resolve("share/backup-test-restored.bin")
-        BackupCrypto.decryptToFile(context, encryptedUri, restored, password.toCharArray())
-        assertEquals("payload", restored.readText())
-        try {
-            BackupCrypto.decryptToFile(context, encryptedUri, context.cacheDir.resolve("share/backup-test-wrong.bin"), "wrong password".toCharArray())
-            fail("A wrong password must be rejected")
-        } catch (_: Exception) {
-            // Expected authenticated-decryption failure.
+    fun backupCryptoRoundTripAndWrongPasswordAreRejected() {
+        runBlocking {
+            val source = context.cacheDir.resolve("share/backup-test-source.bin").apply { parentFile?.mkdirs(); writeText("payload") }
+            val encrypted = context.cacheDir.resolve("share/backup-test-encrypted.bin").apply { createNewFile() }
+            val encryptedUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", encrypted)
+            BackupCrypto.encryptFile(source, context, encryptedUri, password.toCharArray())
+            val restored = context.cacheDir.resolve("share/backup-test-restored.bin")
+            BackupCrypto.decryptToFile(context, encryptedUri, restored, password.toCharArray())
+            assertEquals("payload", restored.readText())
+            try {
+                BackupCrypto.decryptToFile(context, encryptedUri, context.cacheDir.resolve("share/backup-test-wrong.bin"), "wrong password".toCharArray())
+                fail("A wrong password must be rejected")
+            } catch (_: Exception) {
+                // Expected authenticated-decryption failure.
+            }
+            source.delete(); encrypted.delete(); restored.delete()
         }
-        source.delete(); encrypted.delete(); restored.delete()
     }
 
     @Test
@@ -194,7 +196,9 @@ class BackupRoundTripTest {
 
     @Test
     fun invalidImageBackupIsRejectedBeforeLiveGenerationChanges() = runBlocking {
-        val maliciousZip = context.cacheDir.resolve("share/backup-test-invalid-image.zip")
+        val maliciousZip = context.cacheDir.resolve("share/backup-test-invalid-image.zip").apply {
+            parentFile?.mkdirs()
+        }
         val encryptedBackup = context.cacheDir.resolve("share/backup-test-invalid-image.hgb").apply { createNewFile() }
         val encryptedUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", encryptedBackup)
         val badId = "invalid-image-document"

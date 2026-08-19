@@ -2,9 +2,9 @@ package com.angel.hypergod.data
 
 /** Shared size contract for backup creation and restore validation. */
 object BackupSizePolicy {
-    const val MAX_ENTRY_BYTES = 512L * 1024 * 1024
-    const val MAX_PAYLOAD_BYTES = 2L * 1024 * 1024 * 1024
-    const val MAX_ARCHIVE_BYTES = MAX_PAYLOAD_BYTES + 32L * 1024 * 1024
+    const val MAX_ENTRY_BYTES = 256L * 1024 * 1024
+    const val MAX_PAYLOAD_BYTES = 512L * 1024 * 1024
+    const val MAX_ARCHIVE_BYTES = MAX_PAYLOAD_BYTES + 16L * 1024 * 1024
     const val MAX_MANIFEST_BYTES = LibraryLimits.MAX_BACKUP_MANIFEST_BYTES
     const val MAX_ARCHIVE_ENTRIES = LibraryLimits.MAX_BACKUP_ENTRY_COUNT
 
@@ -23,6 +23,20 @@ object BackupSizePolicy {
     fun requireManifestSize(size: Long) {
         require(size in 1L..MAX_MANIFEST_BYTES) { "Το ευρετήριο του αντιγράφου είναι υπερβολικά μεγάλο." }
     }
+
+    fun requireCompressionRatio(compressedBytes: Long, expandedBytes: Long) {
+        require(compressedBytes >= 0L && expandedBytes >= 0L) { "Μη έγκυρα μεγέθη αρχείου στο αντίγραφο." }
+        val base = compressedBytes.coerceAtLeast(1L)
+        val permitted = if (base > (Long.MAX_VALUE - COMPRESSION_RATIO_SLOP_BYTES) / MAX_COMPRESSION_RATIO) {
+            Long.MAX_VALUE
+        } else {
+            base * MAX_COMPRESSION_RATIO + COMPRESSION_RATIO_SLOP_BYTES
+        }
+        require(expandedBytes <= permitted) { "Το αντίγραφο περιέχει ύποπτα συμπιεσμένο αρχείο." }
+    }
+
+    private const val MAX_COMPRESSION_RATIO = 200L
+    private const val COMPRESSION_RATIO_SLOP_BYTES = 1024L * 1024
 
     fun requireLibraryState(
         documents: Int,

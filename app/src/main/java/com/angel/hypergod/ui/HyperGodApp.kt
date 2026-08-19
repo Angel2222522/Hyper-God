@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -89,6 +90,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -110,6 +112,7 @@ import com.angel.hypergod.data.MetadataConfidence
 import com.angel.hypergod.data.MetadataFieldConfirmations
 import com.angel.hypergod.data.ProcessingState
 import com.angel.hypergod.data.ReminderEntity
+import com.angel.hypergod.security.BackupPasswordPolicy
 import java.time.LocalDate
 import java.time.Instant
 import java.time.ZoneId
@@ -286,6 +289,7 @@ fun HyperGodApp(
                 else -> SettingsScreen(
                     profile = personalProfile,
                     lockEnabled = lockEnabled,
+                    busy = busy,
                     onEnableLock = onEnableLock,
                     onDisableLock = onDisableLock,
                     onRequestNotifications = onRequestNotifications,
@@ -850,6 +854,7 @@ private fun CaseDetailScreen(caseEntity: CaseEntity, documents: List<DocumentSum
 private fun SettingsScreen(
     profile: PersonalProfile,
     lockEnabled: Boolean,
+    busy: Boolean,
     onEnableLock: () -> Unit,
     onDisableLock: () -> Unit,
     onRequestNotifications: () -> Unit,
@@ -881,7 +886,7 @@ private fun SettingsScreen(
                         profile.socialSecurityNumber.takeIf { it.isNotBlank() }?.let { InfoRow("ΑΜΚΑ", maskSensitive(it)) }
                         profile.email.takeIf { it.isNotBlank() }?.let { InfoRow("Email", it) }
                     }
-                    Button(onClick = { editProfile = true }, modifier = Modifier.fillMaxWidth()) {
+                    Button(onClick = { editProfile = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                         Text(if (profile.isEmpty) "Δημιουργία μητρώου" else "Επεξεργασία μητρώου")
                     }
                 }
@@ -901,11 +906,12 @@ private fun SettingsScreen(
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Archive, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(10.dp)); Text("Αντίγραφα ασφαλείας", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-                    Text("Το αντίγραφο περιλαμβάνει έγγραφα, OCR, υποθέσεις, checklist, χρονολόγιο και υπενθυμίσεις. Οι ρυθμίσεις ασφαλείας δεν μεταφέρονται και προστατεύεται με δικό σου κωδικό.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Το αντίγραφο περιλαμβάνει έγγραφα, OCR, υποθέσεις, checklist, χρονολόγιο και υπενθυμίσεις. Το προσωπικό μητρώο και οι ρυθμίσεις ασφαλείας δεν μεταφέρονται. Προστατεύεται με δικό σου κωδικό.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onBackup, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Archive, null); Spacer(Modifier.width(6.dp)); Text("Δημιουργία") }
-                        OutlinedButton(onClick = onRestore, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Restore, null); Spacer(Modifier.width(6.dp)); Text("Επαναφορά") }
+                        Button(onClick = onBackup, enabled = !busy, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Archive, null); Spacer(Modifier.width(6.dp)); Text("Δημιουργία") }
+                        OutlinedButton(onClick = onRestore, enabled = !busy, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Restore, null); Spacer(Modifier.width(6.dp)); Text("Επαναφορά") }
                     }
+                    if (busy) LinearProcessing()
                 }
             }
         }
@@ -1411,24 +1417,39 @@ private fun PasswordDialog(title: String, minimumLength: Int, confirmPassword: B
     var password by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
     var visible by remember { mutableStateOf(false) }
+    val secureKeyboard = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false)
+    val strongEnough = !confirmPassword || BackupPasswordPolicy.isStrong(password)
+    val dismissAndClear = { password = ""; confirmation = ""; onDismiss() }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismissAndClear,
         title = { Text(title) },
         text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Ο κωδικός δεν αποθηκεύεται. Χρησιμοποίησέ τον ξανά για επαναφορά. Ελάχιστο μήκος: $minimumLength χαρακτήρες.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Text(
+                if (confirmPassword) "Ο κωδικός δεν αποθηκεύεται. Χρησιμοποίησε τουλάχιστον $minimumLength χαρακτήρες και τρεις κατηγορίες χαρακτήρων ή μια μεγάλη πολυλέξη."
+                else "Ο κωδικός δεν αποθηκεύεται. Ελάχιστο μήκος για παλαιότερα αντίγραφα: $minimumLength χαρακτήρες.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 13.sp
+            )
             OutlinedTextField(
                 password, { password = it }, label = { Text("Κωδικός") }, singleLine = true,
+                keyboardOptions = secureKeyboard,
                 visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
                 trailingIcon = { IconButton(onClick = { visible = !visible }) { Icon(if (visible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Προβολή κωδικού") } }
             )
             if (confirmPassword) {
                 OutlinedTextField(
                     confirmation, { confirmation = it }, label = { Text("Επιβεβαίωση κωδικού") }, singleLine = true,
+                    keyboardOptions = secureKeyboard,
                     visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation()
                 )
             }
         } },
-        confirmButton = { TextButton(enabled = password.length >= minimumLength && (!confirmPassword || password == confirmation), onClick = { onConfirm(password) }) { Text("Συνέχεια") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Ακύρωση") } }
+        confirmButton = { TextButton(enabled = password.length >= minimumLength && strongEnough && (!confirmPassword || password == confirmation), onClick = {
+            val submitted = password
+            password = ""
+            confirmation = ""
+            onConfirm(submitted)
+        }) { Text("Συνέχεια") } },
+        dismissButton = { TextButton(onClick = dismissAndClear) { Text("Ακύρωση") } }
     )
 }

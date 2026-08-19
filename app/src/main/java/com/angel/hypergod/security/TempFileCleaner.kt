@@ -18,7 +18,6 @@ object TempFileCleaner {
             context.cacheDir.resolve("scanner") to MAX_TEMP_AGE_MS,
             context.cacheDir.resolve("ocr") to MAX_TEMP_AGE_MS,
             context.cacheDir.resolve("viewer") to MAX_TEMP_AGE_MS,
-            context.cacheDir.resolve("backup") to MAX_TEMP_AGE_MS,
             context.cacheDir.resolve("profile") to MAX_TEMP_AGE_MS,
             context.cacheDir.resolve("export") to MAX_TEMP_AGE_MS
         )
@@ -27,6 +26,11 @@ object TempFileCleaner {
                 if (isStale(file, now, maxAge)) FileCrypto.deleteRecursively(file)
             }
         }
+        // A fresh process cannot own an in-flight backup operation. Remove all
+        // plaintext backup/restore cache immediately instead of retaining a
+        // recent interrupted archive for fifteen minutes.
+        context.cacheDir.resolve("backup").listFiles().orEmpty()
+            .forEach(FileCrypto::deleteRecursively)
         context.cacheDir.listFiles().orEmpty()
             .filter { it.name.endsWith(".tmp") || it.name.endsWith(".part") }
             .filter { isStale(it, now, MAX_TEMP_AGE_MS) }

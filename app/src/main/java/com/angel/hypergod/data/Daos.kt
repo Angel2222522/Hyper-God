@@ -193,6 +193,9 @@ interface CaseDao {
 
 @Dao
 interface CaseDocumentDao {
+    @Query("SELECT COUNT(*) FROM case_documents")
+    suspend fun count(): Int
+
     @Query("SELECT * FROM case_documents")
     suspend fun getAll(): List<CaseDocumentCrossRef>
 

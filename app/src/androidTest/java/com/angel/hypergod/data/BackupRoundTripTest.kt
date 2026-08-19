@@ -1,6 +1,8 @@
 package com.angel.hypergod.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.core.content.FileProvider
 import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
@@ -8,8 +10,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.angel.hypergod.security.BackupCrypto
 import com.angel.hypergod.security.FileCrypto
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.nio.charset.StandardCharsets
 import java.time.LocalDate
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
@@ -36,11 +38,21 @@ class BackupRoundTripTest {
         documentId = "backup-test-${UUID.randomUUID()}"
         documentRoot = context.filesDir.resolve("documents/$documentId").apply { mkdirs() }
         val encrypted = documentRoot.resolve("page_0.pf")
-        FileCrypto.encrypt(ByteArrayInputStream("sensitive page".toByteArray(StandardCharsets.UTF_8)), encrypted)
+        val imageBytes = ByteArrayOutputStream().use { output ->
+            val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+            try {
+                bitmap.eraseColor(android.graphics.Color.WHITE)
+                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+            } finally {
+                bitmap.recycle()
+            }
+            output.toByteArray()
+        }
+        FileCrypto.encrypt(ByteArrayInputStream(imageBytes), encrypted)
         val now = System.currentTimeMillis()
         database.withTransaction {
-            database.documentDao().insert(DocumentEntity(documentId, "Backup test", "test.txt", "text/plain", encrypted.absolutePath, 1, processingState = ProcessingState.PROCESSED, createdAt = now, updatedAt = now))
-            database.documentPageDao().insertAll(listOf(DocumentPageEntity(documentId, 0, encrypted.absolutePath, "OCR test", "test.txt", "text/plain")))
+            database.documentDao().insert(DocumentEntity(documentId, "Backup test", "test.png", "image/png", encrypted.absolutePath, 1, processingState = ProcessingState.PROCESSED, createdAt = now, updatedAt = now))
+            database.documentPageDao().insertAll(listOf(DocumentPageEntity(documentId, 0, encrypted.absolutePath, "OCR test", "test.png", "image/png")))
         }
     }
 
@@ -55,7 +67,7 @@ class BackupRoundTripTest {
     }
 
     @Test
-    fun backupCryptoRoundTripAndWrongPasswordAreRejected() {
+    fun backupCryptoRoundTripAndWrongPasswordAreRejected() = runBlocking {
         val source = context.cacheDir.resolve("share/backup-test-source.bin").apply { parentFile?.mkdirs(); writeText("payload") }
         val encrypted = context.cacheDir.resolve("share/backup-test-encrypted.bin").apply { createNewFile() }
         val encryptedUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", encrypted)
@@ -63,8 +75,11 @@ class BackupRoundTripTest {
         val restored = context.cacheDir.resolve("share/backup-test-restored.bin")
         BackupCrypto.decryptToFile(context, encryptedUri, restored, password.toCharArray())
         assertEquals("payload", restored.readText())
-        assertThrows(Exception::class.java) {
+        try {
             BackupCrypto.decryptToFile(context, encryptedUri, context.cacheDir.resolve("share/backup-test-wrong.bin"), "wrong password".toCharArray())
+            fail("A wrong password must be rejected")
+        } catch (_: Exception) {
+            // Expected authenticated-decryption failure.
         }
         source.delete(); encrypted.delete(); restored.delete()
     }
@@ -105,7 +120,9 @@ class BackupRoundTripTest {
             assertEquals("OCR test", database.documentPageDao().getForDocument(documentId).single().ocrText)
             val plain = context.cacheDir.resolve("share/backup-test-plain.bin")
             FileCrypto.decryptToTemp(File(restored!!.encryptedPath), plain)
-            assertEquals("sensitive page", plain.readText())
+            val decoded = BitmapFactory.decodeFile(plain.absolutePath)
+            assertNotNull(decoded)
+            decoded?.recycle()
             plain.delete()
         }
     }

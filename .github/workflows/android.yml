@@ -99,6 +99,31 @@ jobs:
       - name: Verify unsigned release compilation
         run: ./gradlew assembleRelease
 
+      - name: Package official Android signing tools
+        run: tar -czf "$RUNNER_TEMP/android-signing-tools.tgz" -C "$ANDROID_HOME/build-tools/36.0.0" apksigner zipalign aapt lib/apksigner.jar
+
+      - name: Upload unsigned release APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyper-god-unsigned-release
+          path: app/build/outputs/apk/release/*-unsigned.apk
+          if-no-files-found: error
+
+      - name: Upload official Android signing tools
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyper-god-android-signing-tools
+          path: ${{ runner.temp }}/android-signing-tools.tgz
+          if-no-files-found: error
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyper-god-lint-reports
+          path: app/build/reports/lint-results-debug.*
+          if-no-files-found: ignore
+
       - name: Upload Room schemas
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

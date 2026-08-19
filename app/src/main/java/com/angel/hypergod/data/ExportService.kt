@@ -24,6 +24,7 @@ class ExportService(private val context: Context) {
     private val renderService = DocumentRenderService(context)
 
     suspend fun exportDocuments(destination: Uri, documentIds: List<String>) = withContext(Dispatchers.IO) {
+        DataOperationCoordinator.withGenerationRead {
         DataOperationCoordinator.requireUserSessionUnlocked()
         val (documents, pages) = DataOperationCoordinator.withExclusive {
             val documents = selectedDocuments(documentIds)
@@ -83,9 +84,11 @@ class ExportService(private val context: Context) {
                 temporary.delete()
             }
         }
+        }
     }
 
     suspend fun exportPdf(destination: Uri, documentIds: List<String>) = withContext(Dispatchers.IO) {
+        DataOperationCoordinator.withGenerationRead {
         DataOperationCoordinator.requireUserSessionUnlocked()
         val documents = DataOperationCoordinator.withExclusive { selectedDocuments(documentIds) }
         run {
@@ -97,9 +100,11 @@ class ExportService(private val context: Context) {
                 pdf.delete()
             }
         }
+        }
     }
 
     suspend fun createSharePdf(documentId: String): File = withContext(Dispatchers.IO) {
+        DataOperationCoordinator.withGenerationRead {
         DataOperationCoordinator.requireUserSessionUnlocked()
         DataOperationCoordinator.withDocumentExclusive(documentId) {
             val document = database.documentDao().getById(documentId) ?: error("Το έγγραφο δεν βρέθηκε.")
@@ -128,6 +133,7 @@ class ExportService(private val context: Context) {
                 output.delete()
                 throw error
             }
+        }
         }
     }
 
@@ -183,9 +189,7 @@ class ExportService(private val context: Context) {
         .ifBlank { "bin" }
 
     private fun isPdf(mimeType: String, sourceName: String, document: DocumentEntity): Boolean =
-        mimeType.equals("application/pdf", ignoreCase = true) ||
-            sourceName.substringAfterLast('.', "").equals("pdf", ignoreCase = true) ||
-            (sourceName.isBlank() && document.mimeType.equals("application/pdf", ignoreCase = true))
+        ImportTypePolicy.isPdf(mimeType, sourceName, document.mimeType)
 
     private class StreamingPdfWriter(output: OutputStream, pageCount: Int) : AutoCloseable {
         private val out = CountingOutputStream(output, MAX_EXPORT_BYTES)

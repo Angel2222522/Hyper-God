@@ -1,11 +1,14 @@
 package com.angel.hypergod.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import androidx.room.withTransaction
 import androidx.work.WorkManager
 import com.angel.hypergod.security.BackupCrypto
+import com.angel.hypergod.security.BackupPasswordPolicy
 import com.angel.hypergod.security.FileCrypto
 import com.angel.hypergod.workers.OcrWorker
 import kotlinx.coroutines.Dispatchers
@@ -21,8 +24,9 @@ import java.io.OutputStream
 import android.os.ParcelFileDescriptor
 import java.util.UUID
 import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import kotlin.math.max
 
 class BackupService(private val context: Context) {
     private val database by lazy { AppDatabase.get(context) }
@@ -111,8 +115,11 @@ class BackupService(private val context: Context) {
     }
 
     suspend fun create(destination: Uri, password: String) = withContext(Dispatchers.IO) {
+        DataOperationCoordinator.withGenerationRead {
         DataOperationCoordinator.requireUserSessionUnlocked()
-        require(password.length >= MIN_NEW_BACKUP_PASSWORD_LENGTH) { "Ο νέος κωδικός backup πρέπει να έχει τουλάχιστον $MIN_NEW_BACKUP_PASSWORD_LENGTH χαρακτήρες." }
+        require(BackupPasswordPolicy.isStrong(password)) {
+            "Χρησιμοποίησε ισχυρό κωδικό ή πολυλέξη τουλάχιστον $MIN_NEW_BACKUP_PASSWORD_LENGTH χαρακτήρων."
+        }
         val snapshot = DataOperationCoordinator.withExclusive { snapshot() }
         val payload = snapshot.payload
         val pages = snapshot.pages
@@ -156,19 +163,18 @@ class BackupService(private val context: Context) {
         } finally {
             zip.delete()
         }
+        }
     }
 
     suspend fun restore(source: Uri, password: String) = withContext(Dispatchers.IO) {
         DataOperationCoordinator.requireUserSessionUnlocked()
         require(password.length >= MIN_RESTORE_PASSWORD_LENGTH) { "Ο κωδικός επαναφοράς πρέπει να έχει τουλάχιστον $MIN_RESTORE_PASSWORD_LENGTH χαρακτήρες." }
-        WorkManager.getInstance(context).cancelAllWorkByTag("document-processing")
-        OcrWorker.awaitIdle()
         val zip = context.cacheDir.resolve("backup/restore_${System.currentTimeMillis()}.zip").apply {
             parentFile?.mkdirs()
         }
         try {
             BackupCrypto.decryptToFile(context, source, zip, password.toCharArray())
-            restoreZip(zip)
+            DataOperationCoordinator.withMaintenance { restoreZip(zip) }
         } finally {
             zip.delete()
         }
@@ -186,6 +192,9 @@ class BackupService(private val context: Context) {
             val eventCount = database.timelineDao().count()
             val checklistCount = database.checklistDao().count()
             val reminderCount = database.reminderDao().count()
+            require(database.caseDocumentDao().count() <= LibraryLimits.MAX_CASE_DOCUMENT_RELATIONS) {
+                "Η βιβλιοθήκη περιέχει υπερβολικά πολλές συνδέσεις υποθέσεων και εγγράφων."
+            }
             BackupSizePolicy.requireLibraryState(
                 documents = documentCount,
                 pages = pageCount,
@@ -232,12 +241,19 @@ class BackupService(private val context: Context) {
 
     private suspend fun restoreZip(zip: File) {
         val archive = inspectArchive(zip)
+        JsonStructurePolicy.validate(archive.manifest)
         val manifest = JSONObject(archive.manifest)
+        require(manifest.keys().asSequence().all { it in ALLOWED_MANIFEST_FIELDS }) {
+            "Το αντίγραφο περιέχει άγνωστο πεδίο ευρετηρίου."
+        }
         val formatVersion = manifest.optInt("formatVersion", -1)
         require(formatVersion in 1..4) { "Η έκδοση του αντιγράφου δεν υποστηρίζεται." }
         val portableFiles = formatVersion >= 2
         val pageDescriptors = parsePageDescriptors(manifest.optJSONArray("pages"))
         val expectedFiles = pageDescriptors.map { it.entryName }.toSet()
+        require(archive.names == expectedFiles + "backup.json") {
+            "Το αντίγραφο περιέχει μη αναμενόμενα ή ελλιπή αρχεία."
+        }
         // Do not generate a replacement key after a Keystore loss when the
         // current device still has encrypted library files. A new device with
         // an empty library may create its first key for portable restore.
@@ -245,6 +261,7 @@ class BackupService(private val context: Context) {
         val stagingRoot = context.cacheDir.resolve("restore_documents_${UUID.randomUUID()}").apply { mkdirs() }
         val root = context.filesDir.resolve("documents")
         val previousRoot = context.cacheDir.resolve("previous_documents_${UUID.randomUUID()}")
+        val restoreOperationId = UUID.randomUUID().toString()
         val currentDocumentIds = database.documentDao().getAllIds().toSet()
         // A missing live root is safe to replace only for an empty current
         // database. If Room still contains documents, replacing the missing
@@ -257,30 +274,25 @@ class BackupService(private val context: Context) {
         var filesInstalled = false
         var databaseCommitted = false
         try {
-            ZipInputStream(FileInputStream(zip)).use { input ->
-                var entry = input.nextEntry
-                val seen = mutableSetOf<String>()
-                while (entry != null) {
-                    val name = validateEntryName(entry.name)
-                    require(seen.add(name)) { "Το αντίγραφο περιέχει διπλό αρχείο." }
-                    if (!entry.isDirectory && name in expectedFiles) {
-                        val descriptor = pageDescriptors.first { it.entryName == name }
-                        val staged = stagingRoot.resolve("${descriptor.documentId}/page_${descriptor.pageIndex}.pf")
-                        staged.parentFile?.mkdirs()
+            ZipFile(zip).use { archiveFile ->
+                pageDescriptors.forEach { descriptor ->
+                    val entry = archiveFile.getEntry(descriptor.entryName)
+                        ?: error("Το αντίγραφο είναι ελλιπές ή δεν περιέχει όλες τις σελίδες.")
+                    val staged = stagingRoot.resolve("${descriptor.documentId}/page_${descriptor.pageIndex}.pf")
+                    staged.parentFile?.mkdirs()
+                    archiveFile.getInputStream(entry).use { input ->
                         if (portableFiles) FileCrypto.encrypt(input, staged, MAX_BACKUP_ENTRY_BYTES)
-                        else staged.outputStream().use { input.copyLimitedTo(it, MAX_BACKUP_ENTRY_BYTES) }
-                        stagedFiles[name] = staged
-                    } else if (!entry.isDirectory) {
-                        input.discardLimited(MAX_BACKUP_ENTRY_BYTES)
+                        else {
+                            staged.outputStream().use { input.copyLimitedTo(it, MAX_BACKUP_ENTRY_BYTES) }
+                            normalizeLegacyEnvelope(staged)
+                        }
                     }
-                    input.closeEntry()
-                    entry = input.nextEntry
+                    stagedFiles[descriptor.entryName] = staged
                 }
             }
             require(stagedFiles.keys == expectedFiles) { "Το αντίγραφο είναι ελλιπές ή δεν περιέχει όλες τις σελίδες." }
-            validateStagedPageCounts(stagedFiles, pageDescriptors)
-
             val documents = parseDocuments(manifest.optJSONArray("documents"), pageDescriptors, stagedFiles, root)
+            validateStagedPageCounts(stagedFiles, pageDescriptors, documents)
             val documentIds = documents.map { it.id }.toSet()
             require(pageDescriptors.all { it.documentId in documentIds }) { "Το αντίγραφο περιέχει σελίδα άγνωστου εγγράφου." }
             val cases = parseCases(manifest.optJSONArray("cases"))
@@ -304,8 +316,9 @@ class BackupService(private val context: Context) {
                     pageDescriptors.sumOf { it.ocrText.length.toLong() },
                 totalMetadataJsonChars = documents.sumOf { it.extractedMetadataJson.length.toLong() }
             )
+            val pageDescriptorsByDocument = pageDescriptors.groupBy { it.documentId }
             val restoredPages = documents.flatMap { document ->
-                pageDescriptors.filter { it.documentId == document.id }.map { descriptor ->
+                pageDescriptorsByDocument[document.id].orEmpty().map { descriptor ->
                     DocumentPageEntity(
                         documentId = descriptor.documentId,
                         pageIndex = descriptor.pageIndex,
@@ -330,6 +343,7 @@ class BackupService(private val context: Context) {
                 ?: error("Δεν ήταν δυνατή η επαλήθευση των αρχείων επαναφοράς.")
 
             writeRestoreJournal(
+                operationId = restoreOperationId,
                 phase = "prepared",
                 root = root,
                 previousRoot = previousRoot,
@@ -339,12 +353,16 @@ class BackupService(private val context: Context) {
                 filesystemFingerprint = expectedFilesystemFingerprint
             )
 
-            // Parsing, decrypting and PDF validation above do not hold the
-            // process-wide mutex. Only the filesystem swap and Room commit
-            // are serialized as one short generation transition.
+            // Validation completed without touching live state. The enclosing
+            // maintenance lease owns the generation and journal through final
+            // cleanup, and queued old-generation OCR is cancelled only now.
             DataOperationCoordinator.requireUserSessionUnlocked()
-            DataOperationCoordinator.withExclusive {
-                DataOperationCoordinator.requireUserSessionUnlocked()
+            WorkManager.getInstance(context)
+                .cancelAllWorkByTag("document-processing")
+                .result
+                .get()
+            OcrWorker.awaitIdle()
+            DataOperationCoordinator.requireUserSessionUnlocked()
                 previousMoved = if (root.exists()) {
                     require(root.isDirectory) { "Ο χώρος εγγράφων δεν είναι έγκυρος κατάλογος." }
                     require(root.renameTo(previousRoot)) { "Δεν ήταν δυνατή η προετοιμασία της επαναφοράς." }
@@ -357,6 +375,7 @@ class BackupService(private val context: Context) {
                 require(stagingRoot.renameTo(root)) { "Δεν ήταν δυνατή η εγκατάσταση των αρχείων επαναφοράς." }
                 filesInstalled = true
                 writeRestoreJournal(
+                    operationId = restoreOperationId,
                     phase = "files_installed",
                     root = root,
                     previousRoot = previousRoot,
@@ -387,6 +406,7 @@ class BackupService(private val context: Context) {
                 // kept; startup recovery will finalize them instead of
                 // rolling them back.
                 writeRestoreJournal(
+                    operationId = restoreOperationId,
                     phase = "database_committed",
                     root = root,
                     previousRoot = previousRoot,
@@ -395,17 +415,16 @@ class BackupService(private val context: Context) {
                     databaseFingerprint = expectedDatabaseFingerprint,
                     filesystemFingerprint = expectedFilesystemFingerprint
                 )
-            }
             ReminderScheduler.rescheduleAll(context)
             FileCrypto.deleteRecursivelyStrict(previousRoot)
-            clearRestoreJournal()
+            clearRestoreJournal(restoreOperationId)
         } catch (error: Throwable) {
             if (!databaseCommitted && filesInstalled) {
                 if (previousMoved) {
                     val rollbackSucceeded = runCatching {
                         FileCrypto.deleteRecursivelyStrict(root)
                         require(previousRoot.renameTo(root)) { "Δεν ήταν δυνατή η επαναφορά της προηγούμενης γενιάς." }
-                        clearRestoreJournal()
+                        clearRestoreJournal(restoreOperationId)
                     }.isSuccess
                     if (!rollbackSucceeded) {
                         // Keep the journal: deleting it here would make the
@@ -425,7 +444,7 @@ class BackupService(private val context: Context) {
                     val restored = runCatching {
                         require(!root.exists()) { "Το παλιό αρχείο επαναφοράς δεν βρίσκεται στη σωστή θέση." }
                         require(previousRoot.renameTo(root)) { "Δεν ήταν δυνατή η επαναφορά της προηγούμενης γενιάς." }
-                        clearRestoreJournal()
+                        clearRestoreJournal(restoreOperationId)
                     }.isSuccess
                     if (!restored) {
                         // Keep the journal so startup recovery can retry.
@@ -434,7 +453,7 @@ class BackupService(private val context: Context) {
                     // The live root was never moved or replaced, so clearing
                     // the prepared journal is safe and avoids pinning a
                     // disposable staging tree after a validation failure.
-                    clearRestoreJournal()
+                    clearRestoreJournal(restoreOperationId)
                 }
             }
             throw error
@@ -485,11 +504,23 @@ class BackupService(private val context: Context) {
             val providerManuallyEdited = item.optBoolean("providerManuallyEdited", legacyGlobalManual)
             val issuedDateManuallyEdited = item.optBoolean("issuedDateManuallyEdited", legacyGlobalManual)
             val protocolNumberManuallyEdited = item.optBoolean("protocolNumberManuallyEdited", legacyGlobalManual)
+            val originalFileName = item.getString("originalFileName")
+                .requireLength(LibraryLimits.MAX_DOCUMENT_FILE_NAME_CHARS, "Το όνομα αρχείου είναι υπερβολικά μεγάλο.")
+            val documentMime = ImportTypePolicy.resolveMime(
+                item.getString("mimeType").requireLength(LibraryLimits.MAX_MIME_TYPE_CHARS, "Ο τύπος αρχείου είναι υπερβολικά μεγάλος."),
+                originalFileName
+            )
+            require(ImportTypePolicy.isSupported(documentMime)) { "Το αντίγραφο περιέχει μη υποστηριζόμενο τύπο εγγράφου." }
+            val firstPage = documentPages.minBy { it.pageIndex }
+            val firstPageMime = ImportTypePolicy.resolvePageMime(firstPage.mimeType, firstPage.sourceFileName, documentMime)
+            require(ImportTypePolicy.isSupported(firstPageMime) &&
+                ImportTypePolicy.isPdf(firstPageMime, firstPage.sourceFileName, documentMime) == documentMime.equals("application/pdf", true)
+            ) { "Ο τύπος του εγγράφου δεν συμφωνεί με την πρώτη πηγή του." }
             result += DocumentEntity(
                 id = id,
                 title = item.getString("title").requireLength(LibraryLimits.MAX_DOCUMENT_TITLE_CHARS, "Ο τίτλος εγγράφου είναι υπερβολικά μεγάλος."),
-                originalFileName = item.getString("originalFileName").requireLength(LibraryLimits.MAX_DOCUMENT_FILE_NAME_CHARS, "Το όνομα αρχείου είναι υπερβολικά μεγάλο."),
-                mimeType = item.getString("mimeType").requireLength(LibraryLimits.MAX_MIME_TYPE_CHARS, "Ο τύπος αρχείου είναι υπερβολικά μεγάλος."),
+                originalFileName = originalFileName,
+                mimeType = documentMime,
                 encryptedPath = root.resolve("$id/page_${documentPages.minOf { it.pageIndex }}.pf").absolutePath,
                 pageCount = pageCount.coerceAtLeast(documentPages.size),
                 category = item.optString("category", "Άλλα").requireLength(LibraryLimits.MAX_DOCUMENT_CATEGORY_CHARS, "Η κατηγορία είναι υπερβολικά μεγάλη."),
@@ -526,23 +557,39 @@ class BackupService(private val context: Context) {
         return result
     }
 
-    private fun validateStagedPageCounts(stagedFiles: Map<String, File>, descriptors: List<PageDescriptor>) {
+    private fun validateStagedPageCounts(
+        stagedFiles: Map<String, File>,
+        descriptors: List<PageDescriptor>,
+        documents: List<DocumentEntity>
+    ) {
         var logicalPages = 0
         val logicalPagesByDocument = mutableMapOf<String, Int>()
+        val documentsById = documents.associateBy { it.id }
         descriptors.forEach { descriptor ->
-            val isPdf = descriptor.mimeType.equals("application/pdf", true) || descriptor.sourceFileName.endsWith(".pdf", true)
-            val count = if (!isPdf) {
-                1
-            } else {
-                val plain = context.cacheDir.resolve("backup/validate_${UUID.randomUUID()}.tmp").apply { parentFile?.mkdirs() }
-                try {
-                    FileCrypto.decryptToTemp(stagedFiles.getValue(descriptor.entryName), plain)
+            val document = documentsById[descriptor.documentId]
+                ?: error("Το αντίγραφο περιέχει σελίδα άγνωστου εγγράφου.")
+            val effectiveMime = ImportTypePolicy.resolvePageMime(
+                descriptor.mimeType,
+                descriptor.sourceFileName,
+                document.mimeType
+            )
+            require(ImportTypePolicy.isSupported(effectiveMime)) {
+                "Το αντίγραφο περιέχει μη υποστηριζόμενο τύπο πηγής."
+            }
+            val plain = context.cacheDir.resolve("backup/validate_${UUID.randomUUID()}.tmp").apply { parentFile?.mkdirs() }
+            val count = try {
+                FileCrypto.decryptToTemp(stagedFiles.getValue(descriptor.entryName), plain)
+                require(plain.length() in 1..MAX_BACKUP_ENTRY_BYTES) { "Μη έγκυρη σελίδα στο αντίγραφο." }
+                if (effectiveMime.equals("application/pdf", true)) {
                     ParcelFileDescriptor.open(plain, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
                         PdfRenderer(fd).use { it.pageCount.coerceAtLeast(1) }
                     }
-                } finally {
-                    plain.delete()
+                } else {
+                    validateImageFile(plain)
+                    1
                 }
+            } finally {
+                plain.delete()
             }
             val documentTotal = (logicalPagesByDocument[descriptor.documentId] ?: 0) + count
             require(count <= LibraryLimits.MAX_LOGICAL_PAGES_PER_DOCUMENT &&
@@ -556,6 +603,34 @@ class BackupService(private val context: Context) {
         }
     }
 
+    private fun validateImageFile(file: File) {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Το αντίγραφο περιέχει μη έγκυρη εικόνα." }
+        require(bounds.outWidth <= MAX_IMAGE_SIDE && bounds.outHeight <= MAX_IMAGE_SIDE) { "Η εικόνα του αντιγράφου έχει υπερβολική ανάλυση." }
+        require(bounds.outWidth.toLong() * bounds.outHeight <= MAX_IMAGE_PIXELS) { "Η εικόνα του αντιγράφου είναι υπερβολικά μεγάλη." }
+        var sample = 1
+        while (max(bounds.outWidth / sample, bounds.outHeight / sample) > IMAGE_VALIDATION_SIDE) sample *= 2
+        val decoded: Bitmap = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }) ?: error("Το αντίγραφο περιέχει εικόνα που δεν αποκωδικοποιείται.")
+        decoded.recycle()
+    }
+
+    /** Version-1 backups carried device-bound envelopes. Authenticate every
+     * envelope with the current Keystore key and normalize it before commit. */
+    private fun normalizeLegacyEnvelope(staged: File) {
+        val plain = context.cacheDir.resolve("backup/legacy_${UUID.randomUUID()}.tmp").apply { parentFile?.mkdirs() }
+        try {
+            FileCrypto.decryptToTemp(staged, plain)
+            require(staged.delete()) { "Δεν ήταν δυνατή η επαλήθευση παλαιού αντιγράφου." }
+            FileInputStream(plain).use { FileCrypto.encrypt(it, staged, MAX_BACKUP_ENTRY_BYTES) }
+        } finally {
+            plain.delete()
+        }
+    }
+
     private fun parsePageDescriptors(array: JSONArray?): List<PageDescriptor> = buildList {
         require(checkedLength(array) <= LibraryLimits.MAX_TOTAL_LOGICAL_PAGES) { "Το αντίγραφο περιέχει υπερβολικά πολλές πηγές." }
         val seen = mutableSetOf<String>()
@@ -565,13 +640,20 @@ class BackupService(private val context: Context) {
             val pageIndex = x.getInt("pageIndex").also { require(it in 0..MAX_PAGE_INDEX) }
             val entryName = "files/$documentId/$pageIndex.pf"
             require(seen.add(entryName)) { "Το αντίγραφο περιέχει διπλή σελίδα." }
+            val sourceFileName = x.optString("sourceFileName")
+                .requireLength(LibraryLimits.MAX_DOCUMENT_FILE_NAME_CHARS, "Το όνομα πηγής είναι υπερβολικά μεγάλο.")
+            val resolvedMime = ImportTypePolicy.resolveMime(
+                x.optString("mimeType", "application/octet-stream")
+                    .requireLength(LibraryLimits.MAX_MIME_TYPE_CHARS, "Ο τύπος πηγής είναι υπερβολικά μεγάλος."),
+                sourceFileName
+            )
             add(PageDescriptor(
                 documentId,
                 pageIndex,
                 entryName,
                 x.optString("ocrText").requireLength(MAX_OCR_TEXT, "Το OCR της πηγής είναι υπερβολικά μεγάλο."),
-                x.optString("sourceFileName").requireLength(LibraryLimits.MAX_DOCUMENT_FILE_NAME_CHARS, "Το όνομα πηγής είναι υπερβολικά μεγάλο."),
-                x.optString("mimeType", "application/octet-stream").requireLength(LibraryLimits.MAX_MIME_TYPE_CHARS, "Ο τύπος πηγής είναι υπερβολικά μεγάλος.")
+                sourceFileName,
+                resolvedMime
             ))
         }
     }
@@ -599,6 +681,9 @@ class BackupService(private val context: Context) {
     }
 
     private fun parseRelations(array: JSONArray?, cases: Set<String>, documents: Set<String>): List<CaseDocumentCrossRef> = buildList {
+        require(checkedLength(array) <= LibraryLimits.MAX_CASE_DOCUMENT_RELATIONS) {
+            "Το αντίγραφο περιέχει υπερβολικά πολλές συνδέσεις."
+        }
         val seen = mutableSetOf<String>()
         for (i in 0 until checkedLength(array)) {
             val x = array!!.getJSONObject(i)
@@ -671,29 +756,40 @@ class BackupService(private val context: Context) {
     }
 
     private fun inspectArchive(zip: File): ArchiveInfo {
+        BackupSizePolicy.requireArchiveSize(zip.length())
         var totalBytes = 0L
         var manifest: String? = null
         val names = mutableSetOf<String>()
-        ZipInputStream(FileInputStream(zip)).use { input ->
-            var entry = input.nextEntry
-            var count = 0
-            while (entry != null) {
-                require(++count <= BackupSizePolicy.MAX_ARCHIVE_ENTRIES) { "Το αντίγραφο περιέχει υπερβολικά πολλά αρχεία." }
+        ZipFile(zip).use { archive ->
+            val entries = archive.entries().asSequence().toList()
+            require(entries.size <= BackupSizePolicy.MAX_ARCHIVE_ENTRIES) { "Το αντίγραφο περιέχει υπερβολικά πολλά αρχεία." }
+            entries.forEach { entry ->
                 val name = validateEntryName(entry.name)
                 require(names.add(name)) { "Το αντίγραφο περιέχει διπλό αρχείο." }
-                if (!entry.isDirectory) {
-                    val data = if (name == "backup.json") input.readLimited(BackupSizePolicy.MAX_MANIFEST_BYTES) else null
-                    if (data != null) manifest = data.toString(Charsets.UTF_8) else input.discardLimited(MAX_BACKUP_ENTRY_BYTES)
-                    totalBytes += entryBytesRead
-                    BackupSizePolicy.requirePayloadSize(totalBytes)
+                require(!entry.isDirectory) { "Το αντίγραφο περιέχει μη αναμενόμενο κατάλογο." }
+                require(entry.size >= 0L && entry.compressedSize >= 0L) { "Το αντίγραφο δεν δηλώνει ασφαλή μεγέθη αρχείων." }
+                if (name == "backup.json") {
+                    BackupSizePolicy.requireManifestSize(entry.size)
+                } else {
+                    BackupSizePolicy.requireEntrySize(entry.size)
                 }
-                input.closeEntry(); entry = input.nextEntry
+                if (name != "backup.json") {
+                    BackupSizePolicy.requireCompressionRatio(entry.compressedSize, entry.size)
+                }
+                totalBytes = Math.addExact(totalBytes, entry.size)
+                BackupSizePolicy.requirePayloadSize(totalBytes)
+                if (name == "backup.json") {
+                    val data = archive.getInputStream(entry).use { it.readLimited(BackupSizePolicy.MAX_MANIFEST_BYTES) }
+                    require(entryBytesRead == entry.size) { "Το ευρετήριο του αντιγράφου είναι ελλιπές." }
+                    manifest = data.toString(Charsets.UTF_8)
+                }
             }
         }
         return ArchiveInfo(manifest ?: error("Το αντίγραφο δεν περιέχει backup.json."), names)
     }
 
     private fun writeRestoreJournal(
+        operationId: String,
         phase: String,
         root: File,
         previousRoot: File,
@@ -703,6 +799,7 @@ class BackupService(private val context: Context) {
         filesystemFingerprint: String
     ) {
         val journal = JSONObject().apply {
+            put("operationId", operationId)
             put("phase", phase)
             put("root", root.canonicalPath)
             put("previousRoot", previousRoot.canonicalPath)
@@ -721,8 +818,16 @@ class BackupService(private val context: Context) {
         }
     }
 
-    private fun clearRestoreJournal() {
-        context.filesDir.resolve(RESTORE_JOURNAL).delete()
+    private fun clearRestoreJournal(operationId: String) {
+        val journalFile = context.filesDir.resolve(RESTORE_JOURNAL)
+        if (!journalFile.isFile) return
+        val currentOperation = runCatching {
+            JSONObject(journalFile.readText(Charsets.UTF_8)).optString("operationId")
+        }.getOrNull()
+        require(currentOperation == operationId) {
+            "Το ημερολόγιο επαναφοράς ανήκει σε διαφορετική λειτουργία και διατηρήθηκε."
+        }
+        require(journalFile.delete()) { "Δεν ήταν δυνατή η εκκαθάριση του ημερολογίου επαναφοράς." }
     }
 
     private fun safeJournalFile(path: String, expectedParent: File): File? {
@@ -745,7 +850,7 @@ class BackupService(private val context: Context) {
 
     private fun checkedLength(array: JSONArray?): Int {
         val length = array?.length() ?: 0
-        require(length <= BackupSizePolicy.MAX_ARCHIVE_ENTRIES) { "Το αντίγραφο περιέχει υπερβολικά πολλά στοιχεία." }
+        require(length <= LibraryLimits.MAX_CASE_DOCUMENT_RELATIONS) { "Το αντίγραφο περιέχει υπερβολικά πολλά στοιχεία." }
         return length
     }
 
@@ -805,9 +910,16 @@ class BackupService(private val context: Context) {
         const val MAX_PAGE_INDEX = 100_000
         const val MAX_OCR_TEXT = LibraryLimits.MAX_DOCUMENT_OCR_CHARS
         const val MAX_METADATA_JSON = LibraryLimits.MAX_METADATA_JSON_CHARS
+        const val MAX_IMAGE_SIDE = 12_000
+        const val MAX_IMAGE_PIXELS = 50_000_000L
+        const val IMAGE_VALIDATION_SIDE = 3_200
         const val MIN_NEW_BACKUP_PASSWORD_LENGTH = 12
         const val MIN_RESTORE_PASSWORD_LENGTH = 8
         const val RESTORE_JOURNAL = "restore_journal.json"
+        val ALLOWED_MANIFEST_FIELDS = setOf(
+            "formatVersion", "createdAt", "documents", "pages", "cases",
+            "relations", "events", "checklist", "reminders"
+        )
     }
 
     private fun Long.saturatingAdd(other: Long): Long = runCatching { Math.addExact(this, other) }

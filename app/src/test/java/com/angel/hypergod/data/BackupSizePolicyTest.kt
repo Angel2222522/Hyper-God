@@ -11,7 +11,7 @@ class BackupSizePolicyTest {
         BackupSizePolicy.requirePayloadSize(BackupSizePolicy.MAX_PAYLOAD_BYTES)
         BackupSizePolicy.requireArchiveSize(BackupSizePolicy.MAX_ARCHIVE_BYTES)
         BackupSizePolicy.requireManifestSize(BackupSizePolicy.MAX_MANIFEST_BYTES)
-        assertEquals(BackupSizePolicy.MAX_PAYLOAD_BYTES + 32L * 1024 * 1024, BackupSizePolicy.MAX_ARCHIVE_BYTES)
+        assertEquals(BackupSizePolicy.MAX_PAYLOAD_BYTES + 16L * 1024 * 1024, BackupSizePolicy.MAX_ARCHIVE_BYTES)
     }
 
     @Test(expected = IllegalArgumentException::class)

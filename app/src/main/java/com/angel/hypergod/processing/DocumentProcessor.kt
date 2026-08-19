@@ -12,6 +12,7 @@ import com.angel.hypergod.data.AppDatabase
 import com.angel.hypergod.data.DataOperationCoordinator
 import com.angel.hypergod.data.DocumentEntity
 import com.angel.hypergod.data.DocumentPageEntity
+import com.angel.hypergod.data.ImportTypePolicy
 import com.angel.hypergod.data.LibraryLimits
 import com.angel.hypergod.data.PdfBitmapRenderer
 import com.angel.hypergod.data.ProcessingState
@@ -201,9 +202,7 @@ class DocumentProcessor(private val context: Context, private val database: AppD
     }
 
     private fun isPdf(mimeType: String, sourceName: String, document: DocumentEntity): Boolean =
-        mimeType.equals("application/pdf", true) ||
-            sourceName.substringAfterLast('.', "").equals("pdf", true) ||
-            (sourceName.isBlank() && document.mimeType.equals("application/pdf", true))
+        ImportTypePolicy.isPdf(mimeType, sourceName, document.mimeType)
 
     companion object {
         const val OCR_MAX_SIDE = 2600

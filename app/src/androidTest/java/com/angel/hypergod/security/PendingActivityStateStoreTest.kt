@@ -3,6 +3,7 @@ package com.angel.hypergod.security
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,5 +27,16 @@ class PendingActivityStateStoreTest {
         assertEquals(listOf("doc-1", "doc-2"), PendingActivityStateStore.peekList(context, "export_ids"))
         assertEquals(listOf("doc-1", "doc-2"), PendingActivityStateStore.consumeList(context, "export_ids"))
         assertEquals(emptyList<String>(), PendingActivityStateStore.consumeList(context, "export_ids"))
+    }
+
+    @Test
+    fun overlongExternalStateIsRejectedWithoutThrowingOrPersisting() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        PendingActivityStateStore.clearList(context, "picker_uris")
+
+        val stored = PendingActivityStateStore.saveList(context, "picker_uris", listOf("x".repeat(2_049)))
+
+        assertFalse(stored)
+        assertEquals(emptyList<String>(), PendingActivityStateStore.peekList(context, "picker_uris"))
     }
 }

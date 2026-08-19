@@ -19,7 +19,7 @@ object PendingActivityStateStore {
     private const val LIST_CREATED_AT_PREFIX = "list_created_at_"
     private const val MAX_AGE_MS = 15 * 60 * 1000L
     private const val MAX_LIST_ITEMS = 100
-    private const val MAX_LIST_ITEM_LENGTH = 512
+    private const val MAX_LIST_ITEM_LENGTH = 2_048
 
     fun savePassword(context: Context, password: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
@@ -70,16 +70,22 @@ object PendingActivityStateStore {
      * backup password. This covers process death while a SAF picker is open;
      * document bytes are never placed in the preferences.
      */
-    fun saveList(context: Context, stateKey: String, values: List<String>) {
+    fun saveList(context: Context, stateKey: String, values: List<String>): Boolean {
         require(stateKey.matches(Regex("[a-z_]{1,32}"))) { "Μη έγκυρο κλειδί προσωρινής κατάστασης." }
-        val bounded = values.distinct().take(MAX_LIST_ITEMS).onEach {
-            require(it.length <= MAX_LIST_ITEM_LENGTH && !it.contains('\u0000')) { "Η προσωρινή κατάσταση είναι υπερβολικά μεγάλη." }
+        val distinct = values.distinct()
+        if (distinct.size > MAX_LIST_ITEMS || distinct.any {
+                it.length !in 1..MAX_LIST_ITEM_LENGTH || it.contains('\u0000')
+            }
+        ) {
+            clearList(context, stateKey)
+            return false
         }
-        val payload = encryptPayload(bounded.joinToString("\u0000"))
+        val payload = encryptPayload(distinct.joinToString("\u0000"))
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString(LIST_PREFIX + stateKey, payload)
             .putLong(LIST_CREATED_AT_PREFIX + stateKey, System.currentTimeMillis())
             .apply()
+        return true
     }
 
     fun peekList(context: Context, stateKey: String): List<String> = readList(context, stateKey, consume = false)

@@ -2,6 +2,7 @@ package com.angel.hypergod.security
 
 import android.content.Context
 import android.net.Uri
+import android.os.CancellationSignal
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.io.File
@@ -16,6 +17,11 @@ import javax.crypto.CipherInputStream
 import javax.crypto.CipherOutputStream
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 /** Encrypts document bytes at rest with a device-keystore protected AES key. */
 object FileCrypto {
@@ -40,14 +46,54 @@ object FileCrypto {
         }
     }
 
-    fun encryptUri(context: Context, uri: Uri, destination: File): Long =
-        encryptUriWithDigest(context, uri, destination).byteCount
+    fun encryptUri(context: Context, uri: Uri, destination: File, maxBytes: Long = MAX_DOCUMENT_BYTES): Long =
+        encryptUriWithDigest(context, uri, destination, maxBytes).byteCount
 
-    fun encryptUriWithDigest(context: Context, uri: Uri, destination: File): EncryptedWriteResult {
+    fun encryptUriWithDigest(
+        context: Context,
+        uri: Uri,
+        destination: File,
+        maxBytes: Long = MAX_DOCUMENT_BYTES
+    ): EncryptedWriteResult {
         ensureKeyAvailableForNewDocument(context)
         destination.parentFile?.mkdirs()
-        return context.contentResolver.openInputStream(uri)?.use { encryptWithDigest(it, destination) }
+        return context.contentResolver.openInputStream(uri)?.use { encryptWithDigest(it, destination, maxBytes) }
             ?: error("Δεν ήταν δυνατή η ανάγνωση του αρχείου.")
+    }
+
+    suspend fun encryptUriWithDigestCancellable(
+        context: Context,
+        uri: Uri,
+        destination: File,
+        maxBytes: Long,
+        timeoutMs: Long = MAX_PROVIDER_READ_DURATION_MS
+    ): EncryptedWriteResult = withTimeout(timeoutMs) {
+        withContext(Dispatchers.IO) {
+            ensureKeyAvailableForNewDocument(context)
+            val signal = CancellationSignal()
+            var descriptor: android.content.res.AssetFileDescriptor? = null
+            val job = kotlin.coroutines.coroutineContext[Job]
+                ?: error("Δεν υπάρχει ενεργή εργασία εισαγωγής.")
+            val cancellationHandle = job.invokeOnCompletion {
+                signal.cancel()
+                runCatching { descriptor?.close() }
+            }
+            try {
+                descriptor = context.contentResolver.openAssetFileDescriptor(uri, "r", signal)
+                    ?: error("Δεν ήταν δυνατή η ανάγνωση του αρχείου.")
+                job.ensureActive()
+                val reportedLength = descriptor!!.length
+                require(reportedLength < 0L || reportedLength <= maxBytes) {
+                    "Το έγγραφο είναι υπερβολικά μεγάλο συνολικά."
+                }
+                descriptor!!.createInputStream().use { input ->
+                    encryptWithDigest(input, destination, maxBytes)
+                }
+            } finally {
+                cancellationHandle.dispose()
+                runCatching { descriptor?.close() }
+            }
+        }
     }
 
     /**
@@ -180,6 +226,7 @@ object FileCrypto {
     }
 
     private const val MAX_DOCUMENT_BYTES = 512L * 1024 * 1024
+    private const val MAX_PROVIDER_READ_DURATION_MS = 5L * 60 * 1000
 
     data class EncryptedWriteResult(val byteCount: Long, val sha256: String)
 

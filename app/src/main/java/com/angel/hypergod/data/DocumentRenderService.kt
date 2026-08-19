@@ -154,9 +154,7 @@ class DocumentRenderService(private val context: Context) {
     }
 
     private fun isPdf(mimeType: String, sourceName: String, document: DocumentEntity): Boolean =
-        mimeType.equals("application/pdf", ignoreCase = true) ||
-            sourceName.substringAfterLast('.', "").equals("pdf", ignoreCase = true) ||
-            (sourceName.isBlank() && document.mimeType.equals("application/pdf", ignoreCase = true))
+        ImportTypePolicy.isPdf(mimeType, sourceName, document.mimeType)
 
     private fun isSafeDocumentFile(file: File): Boolean {
         val root = context.filesDir.resolve("documents").canonicalFile

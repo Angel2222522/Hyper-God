@@ -19,11 +19,12 @@ object LibraryLimits {
     const val MAX_TIMELINE_EVENTS = 20_000
     const val MAX_CHECKLIST_ITEMS = 20_000
     const val MAX_REMINDERS = 20_000
+    const val MAX_CASE_DOCUMENT_RELATIONS = 100_000
 
-    const val MAX_DOCUMENT_OCR_CHARS = 2_000_000
-    const val MAX_TOTAL_OCR_CHARS = 16_000_000
+    const val MAX_DOCUMENT_OCR_CHARS = 500_000
+    const val MAX_TOTAL_OCR_CHARS = 2_000_000
     const val MAX_METADATA_JSON_CHARS = 200_000
-    const val MAX_TOTAL_METADATA_JSON_CHARS = 4_000_000
+    const val MAX_TOTAL_METADATA_JSON_CHARS = 1_000_000
 
     // These limits are shared by live edits and the backup parser. A backup
     // must never shorten a value that the application itself can persist.
@@ -49,8 +50,8 @@ object LibraryLimits {
     const val MAX_REMINDER_TITLE_CHARS = 500
 
     /** The manifest is bounded before it is parsed into an in-memory JSON tree. */
-    const val MAX_BACKUP_MANIFEST_BYTES = 64L * 1024 * 1024
-    const val MAX_BACKUP_ENTRY_COUNT = 100_000
+    const val MAX_BACKUP_MANIFEST_BYTES = 16L * 1024 * 1024
+    const val MAX_BACKUP_ENTRY_COUNT = MAX_TOTAL_LOGICAL_PAGES + 1
 
     fun requireDocumentCount(count: Int) {
         require(count in 0..MAX_DOCUMENTS) { "Η βιβλιοθήκη περιέχει υπερβολικά πολλά έγγραφα." }

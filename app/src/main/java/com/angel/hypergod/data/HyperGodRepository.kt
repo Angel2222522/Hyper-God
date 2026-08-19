@@ -14,6 +14,8 @@ import com.angel.hypergod.security.FileCrypto
 import com.angel.hypergod.workers.OcrWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.File
 import java.time.LocalDate
 import java.util.UUID
@@ -52,9 +54,11 @@ class HyperGodRepository(private val context: Context) {
     fun caseDocuments(caseId: String) = database.caseDocumentDao().observeDocumentsForCase(caseId)
 
     suspend fun importUris(uris: List<Uri>): String? = withContext(Dispatchers.IO) {
+        importSemaphore.withPermit {
+        DataOperationCoordinator.withGenerationRead {
         DataOperationCoordinator.requireUserSessionUnlocked()
         val distinctUris = uris.distinct()
-        if (distinctUris.isEmpty()) return@withContext null
+        if (distinctUris.isEmpty()) return@withGenerationRead null
         LibraryLimits.requireSourceCount(distinctUris.size)
         val importToken = UUID.randomUUID().toString()
         val documentsRoot = File(context.filesDir, "documents").apply {
@@ -71,7 +75,7 @@ class HyperGodRepository(private val context: Context) {
         var totalBytes = 0L
         var databaseCommitted = false
         var installedDirectory: File? = null
-        return@withContext try {
+        try {
             distinctUris.forEachIndexed { index, uri ->
                 val name = safeDisplayName(uri) ?: "σελίδα_${index + 1}"
                 val reportedMime = context.contentResolver.getType(uri).orEmpty()
@@ -90,7 +94,13 @@ class HyperGodRepository(private val context: Context) {
                 val knownSize = querySize(uri)
                 require(knownSize == null || knownSize <= MAX_DOCUMENT_BYTES - totalBytes) { "Το έγγραφο είναι υπερβολικά μεγάλο συνολικά." }
                 val target = File(stagingDirectory, "page_$index.pf")
-                val encrypted = FileCrypto.encryptUriWithDigest(context, uri, target)
+                val remainingBytes = MAX_DOCUMENT_BYTES - totalBytes
+                require(remainingBytes > 0L) { "Το έγγραφο είναι υπερβολικά μεγάλο συνολικά." }
+                val reserve = (knownSize ?: remainingBytes).coerceAtMost(remainingBytes) + MIN_FREE_SPACE_BYTES
+                require(stagingDirectory.usableSpace >= reserve) {
+                    "Δεν υπάρχει αρκετός ελεύθερος χώρος για ασφαλή εισαγωγή."
+                }
+                val encrypted = FileCrypto.encryptUriWithDigestCancellable(context, uri, target, remainingBytes)
                 totalBytes += encrypted.byteCount
                 sourceHashes += encrypted.sha256
                 require(totalBytes <= MAX_DOCUMENT_BYTES) { "Το έγγραφο είναι υπερβολικά μεγάλο συνολικά." }
@@ -161,6 +171,8 @@ class HyperGodRepository(private val context: Context) {
                 FileCrypto.deleteRecursively(installedDirectory ?: stagingDirectory)
             }
             throw error
+        }
+        }
         }
     }
 
@@ -424,6 +436,9 @@ class HyperGodRepository(private val context: Context) {
         DataOperationCoordinator.requireUserSessionUnlocked()
         require(database.caseDao().getById(caseId) != null) { "Η υπόθεση δεν βρέθηκε." }
         require(database.documentDao().getById(documentId) != null) { "Το έγγραφο δεν βρέθηκε." }
+        require(database.caseDocumentDao().count() < LibraryLimits.MAX_CASE_DOCUMENT_RELATIONS) {
+            "Η βιβλιοθήκη έχει φτάσει το όριο συνδέσεων υποθέσεων και εγγράφων."
+        }
         database.caseDocumentDao().insert(CaseDocumentCrossRef(caseId, documentId))
         database.caseDao().getById(caseId)?.let { caseEntity ->
             database.caseDao().updateStatus(caseId, caseEntity.status, System.currentTimeMillis())
@@ -572,7 +587,7 @@ class HyperGodRepository(private val context: Context) {
 
     private fun querySize(uri: Uri): Long? = runCatching {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else null
+            if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0).takeIf { it >= 0L } else null
         }
     }.getOrNull()
 
@@ -596,8 +611,10 @@ class HyperGodRepository(private val context: Context) {
     }
 
     private companion object {
-        const val MAX_DOCUMENT_BYTES = 512L * 1024 * 1024
-        const val MAX_TOTAL_STORAGE_BYTES = 2L * 1024 * 1024 * 1024
+        val importSemaphore = Semaphore(1)
+        const val MAX_DOCUMENT_BYTES = 256L * 1024 * 1024
+        const val MAX_TOTAL_STORAGE_BYTES = 512L * 1024 * 1024
+        const val MIN_FREE_SPACE_BYTES = 64L * 1024 * 1024
         const val MAX_IMAGE_SIDE = 12_000
         const val MAX_IMAGE_PIXELS = 50_000_000L
         const val IMAGE_VALIDATION_SIDE = 3_200

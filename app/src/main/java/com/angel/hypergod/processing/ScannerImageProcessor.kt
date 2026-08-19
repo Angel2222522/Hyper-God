@@ -16,6 +16,24 @@ import kotlin.math.max
  * increases contrast without inventing or discarding document content.
  */
 object ScannerImageProcessor {
+    /** Validates external camera output before it is retained or decoded by UI. */
+    fun validateCapture(file: File) {
+        require(file.isFile && file.length() in 1..MAX_CAPTURE_BYTES) {
+            "Η φωτογραφία είναι κενή ή υπερβολικά μεγάλη."
+        }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) {
+            "Το αρχείο της κάμερας δεν είναι έγκυρη εικόνα."
+        }
+        require(bounds.outWidth <= MAX_CAPTURE_SIDE && bounds.outHeight <= MAX_CAPTURE_SIDE) {
+            "Η φωτογραφία έχει υπερβολική ανάλυση."
+        }
+        require(bounds.outWidth.toLong() * bounds.outHeight <= MAX_CAPTURE_PIXELS) {
+            "Η φωτογραφία είναι υπερβολικά μεγάλη."
+        }
+    }
+
     fun rotateQuarterTurn(input: File, output: File): File {
         val bitmap = decode(input)
         var working = bitmap
@@ -56,6 +74,7 @@ object ScannerImageProcessor {
     }
 
     private fun decode(file: File): Bitmap {
+        validateCapture(file)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.absolutePath, bounds)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Δεν ήταν δυνατή η ανάγνωση της φωτογραφίας." }
@@ -89,4 +108,7 @@ object ScannerImageProcessor {
     }
 
     private const val MAX_SIDE = 3200
+    private const val MAX_CAPTURE_BYTES = 32L * 1024 * 1024
+    private const val MAX_CAPTURE_SIDE = 12_000
+    private const val MAX_CAPTURE_PIXELS = 50_000_000L
 }

@@ -24,10 +24,12 @@ import com.angel.hypergod.data.ExportService
 import com.angel.hypergod.data.DataOperationCoordinator
 import com.angel.hypergod.data.ReminderScheduler
 import com.angel.hypergod.processing.ScannerImageProcessor
+import com.angel.hypergod.security.IncomingSharePolicy
 import com.angel.hypergod.security.PendingActivityStateStore
 import com.angel.hypergod.ui.HyperGodApp
 import com.angel.hypergod.ui.HyperGodViewModel
 import com.angel.hypergod.ui.HyperGodTheme
+import com.angel.hypergod.ui.IncomingShareDialog
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -48,21 +50,40 @@ class MainActivity : FragmentActivity() {
     private var scannerFiles by mutableStateOf<List<File>>(emptyList())
     private var scannerOpen by mutableStateOf(false)
     private var lastIncomingIntentKey: String? = null
-    private var pendingIncomingUris: List<Uri> = emptyList()
+    private var pendingPickerUris: List<Uri> = emptyList()
+    private var pendingExternalShareUris by mutableStateOf<List<Uri>>(emptyList())
     private val biometricExecutor: Executor by lazy { ContextCompat.getMainExecutor(this) }
     private val exportService by lazy { ExportService(this) }
 
     private val documentPicker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@registerForActivityResult
         if (!sensitiveSessionReady()) {
-            uris.forEach { uri -> runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
-            pendingIncomingUris = (pendingIncomingUris + uris).distinct().take(MAX_PENDING_INCOMING_URIS)
-            PendingActivityStateStore.saveList(this, STATE_INCOMING_URIS, pendingIncomingUris.map(Uri::toString))
-            showAuthMessage("Η εισαγωγή θα συνεχιστεί μετά το ξεκλείδωμα της συνεδρίας.")
+            val validated = uris.distinct().take(MAX_PENDING_PICKER_URIS)
+            val granted = validated.filter { uri ->
+                runCatching {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    true
+                }.getOrDefault(false)
+            }
+            pendingPickerUris = (pendingPickerUris + granted).distinct().take(MAX_PENDING_PICKER_URIS)
+            val stored = PendingActivityStateStore.saveList(this, STATE_PICKER_URIS, pendingPickerUris.map(Uri::toString))
+            if (!stored) {
+                pendingPickerUris.forEach(::releasePersistedReadGrant)
+                pendingPickerUris = emptyList()
+                showAuthMessage("Η προσωρινή κατάσταση της επιλογής δεν ήταν έγκυρη. Επίλεξε ξανά τα αρχεία.")
+            } else {
+                showAuthMessage("Η εισαγωγή θα συνεχιστεί μετά το ξεκλείδωμα της συνεδρίας.")
+            }
         } else {
-            uris.forEach { uri -> runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
-            viewModel.importUris(uris) {
-                uris.forEach { uri -> runCatching { contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+            val selected = uris.distinct().take(MAX_PENDING_PICKER_URIS)
+            val persisted = selected.filter { uri ->
+                runCatching {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    true
+                }.getOrDefault(false)
+            }
+            viewModel.importUris(selected) {
+                persisted.forEach(::releasePersistedReadGrant)
             }
         }
     }
@@ -80,8 +101,20 @@ class MainActivity : FragmentActivity() {
     private val cameraCapture = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val file = cameraFile
         if (success && file != null && sensitiveSessionReady()) {
-            scannerFiles = scannerFiles + file
-            scannerOpen = true
+            lifecycleScope.launch {
+                val validation = runCatching {
+                    withContext(Dispatchers.IO) { ScannerImageProcessor.validateCapture(file) }
+                }
+                if (validation.isSuccess && sensitiveSessionReady()) {
+                    scannerFiles = scannerFiles + file
+                    scannerOpen = true
+                } else {
+                    file.delete()
+                    validation.exceptionOrNull()?.let {
+                        showAuthMessage(it.message ?: "Η φωτογραφία της κάμερας απορρίφθηκε.")
+                    }
+                }
+            }
         }
         else file?.delete()
         cameraFile = null
@@ -124,8 +157,10 @@ class MainActivity : FragmentActivity() {
         if (savedInstanceState == null) {
             pendingExportDocumentIds = PendingActivityStateStore.peekList(this, STATE_EXPORT_IDS)
             pendingPdfDocumentIds = PendingActivityStateStore.peekList(this, STATE_PDF_IDS)
-            pendingIncomingUris = PendingActivityStateStore.peekList(this, STATE_INCOMING_URIS).map(Uri::parse)
+            pendingPickerUris = PendingActivityStateStore.peekList(this, STATE_PICKER_URIS)
+                .mapNotNull { encoded -> runCatching { Uri.parse(encoded) }.getOrNull() }
         }
+        releaseUnneededPersistedReadGrants(pendingPickerUris.toSet())
         lockEnabled = settings.getBoolean(KEY_LOCK, false)
         DataOperationCoordinator.setUserSessionState(lockEnabled, sessionUnlocked)
         if (lockEnabled && !canAuthenticate()) {
@@ -167,6 +202,13 @@ class MainActivity : FragmentActivity() {
                     lockEnabled = lockEnabled,
                     locked = lockEnabled && !sessionUnlocked
                 )
+                if (pendingExternalShareUris.isNotEmpty() && (!lockEnabled || sessionUnlocked)) {
+                    IncomingShareDialog(
+                        uris = pendingExternalShareUris,
+                        onAccept = ::acceptExternalShare,
+                        onReject = ::rejectExternalShare
+                    )
+                }
             }
         }
     }
@@ -181,7 +223,7 @@ class MainActivity : FragmentActivity() {
             updateSessionState()
             showAuthMessage("Το κλείδωμα παραμένει ενεργό. Ενεργοποίησε ξανά μια ασφαλή συσκευή ταυτοποίησης για να ξεκλειδώσεις.")
         } else if (lockEnabled && !sessionUnlocked && !lockPromptVisible) {
-            authenticate(onSuccess = { sessionUnlocked = true; updateSessionState(); flushPendingIncoming() }, onFailure = ::showAuthMessage)
+            authenticate(onSuccess = { sessionUnlocked = true; updateSessionState(); flushPendingPicker() }, onFailure = ::showAuthMessage)
         }
     }
 
@@ -200,7 +242,8 @@ class MainActivity : FragmentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putStringArrayList(KEY_PENDING_EXPORT_IDS, ArrayList(pendingExportDocumentIds))
         outState.putStringArrayList(KEY_PENDING_PDF_IDS, ArrayList(pendingPdfDocumentIds))
-        outState.putParcelableArrayList(KEY_PENDING_INCOMING_URIS, ArrayList(pendingIncomingUris))
+        outState.putParcelableArrayList(KEY_PENDING_PICKER_URIS, ArrayList(pendingPickerUris))
+        outState.putParcelableArrayList(KEY_PENDING_EXTERNAL_SHARE_URIS, ArrayList(pendingExternalShareUris))
         outState.putString(KEY_LAST_INCOMING_KEY, lastIncomingIntentKey)
         outState.putStringArrayList(KEY_SCANNER_FILES, ArrayList(scannerFiles.map(File::getAbsolutePath)))
         outState.putBoolean(KEY_SCANNER_OPEN, scannerOpen)
@@ -229,38 +272,85 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleIncomingIntent(incoming: Intent?) {
-        val uris = when (incoming?.action) {
-            Intent.ACTION_SEND -> listOfNotNull(incoming.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: incoming.data)
-            Intent.ACTION_SEND_MULTIPLE -> incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
-            else -> emptyList()
-        }.distinct()
-        if (uris.size > MAX_INCOMING_URIS) {
-            showAuthMessage("Η εισαγωγή από share sheet περιορίζεται σε $MAX_INCOMING_URIS αρχεία ανά αποστολή.")
+        if (incoming?.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) return
+        val uris = runCatching { sharedUris(incoming).distinct() }
+            .getOrElse {
+                showAuthMessage("Η άλλη εφαρμογή έστειλε μη έγκυρα στοιχεία εισαγωγής.")
+                return
+            }
+        val rejection = IncomingSharePolicy.rejectionReason(
+            uris.map { uri -> IncomingSharePolicy.Candidate(uri.scheme, uri.toString().length) }
+        )
+        if (rejection != null) {
+            showAuthMessage(rejection)
+            return
+        }
+        if (pendingExternalShareUris.isNotEmpty()) {
+            showAuthMessage("Υπάρχει ήδη εισαγωγή από άλλη εφαρμογή σε αναμονή. Αποδέξου ή απόρριψέ την πρώτα.")
             return
         }
         val key = incoming?.action.orEmpty() + ":" + uris.joinToString("|")
         if (uris.isNotEmpty() && key != lastIncomingIntentKey) {
             lastIncomingIntentKey = key
+            pendingExternalShareUris = uris
             if (lockEnabled && !sessionUnlocked) {
-                uris.forEach { uri -> runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
-                pendingIncomingUris = (pendingIncomingUris + uris).distinct().take(MAX_PENDING_INCOMING_URIS)
-                PendingActivityStateStore.saveList(this, STATE_INCOMING_URIS, pendingIncomingUris.map(Uri::toString))
-                if (pendingIncomingUris.size >= MAX_PENDING_INCOMING_URIS) showAuthMessage("Υπάρχουν ήδη πολλές εισαγωγές σε αναμονή για ξεκλείδωμα.")
-            }
-            else if (sensitiveSessionReady()) viewModel.importUris(uris) {
-                uris.forEach { uri -> runCatching { contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+                showAuthMessage("Ξεκλείδωσε τη συνεδρία και έπειτα επίλεξε αν αποδέχεσαι τα εισερχόμενα αρχεία.")
             }
         }
     }
 
-    private fun flushPendingIncoming() {
+    private fun flushPendingPicker() {
         if (!sensitiveSessionReady()) return
-        val queued = pendingIncomingUris.ifEmpty { PendingActivityStateStore.consumeList(this, STATE_INCOMING_URIS).map(Uri::parse) }
-        PendingActivityStateStore.clearList(this, STATE_INCOMING_URIS)
-        pendingIncomingUris = emptyList()
-        if (queued.isNotEmpty()) viewModel.importUris(queued) {
-            queued.forEach { uri -> runCatching { contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+        val queued = pendingPickerUris.ifEmpty {
+            PendingActivityStateStore.consumeList(this, STATE_PICKER_URIS)
+                .mapNotNull { encoded -> runCatching { Uri.parse(encoded) }.getOrNull() }
         }
+        PendingActivityStateStore.clearList(this, STATE_PICKER_URIS)
+        pendingPickerUris = emptyList()
+        if (queued.isNotEmpty()) viewModel.importUris(queued) {
+            queued.forEach(::releasePersistedReadGrant)
+        }
+    }
+
+    private fun acceptExternalShare() {
+        if (!sensitiveSessionReady()) return
+        val accepted = pendingExternalShareUris
+        pendingExternalShareUris = emptyList()
+        if (accepted.isNotEmpty()) viewModel.importUris(accepted)
+    }
+
+    private fun rejectExternalShare() {
+        pendingExternalShareUris = emptyList()
+    }
+
+    private fun sharedUris(incoming: Intent): List<Uri> = when (incoming.action) {
+        Intent.ACTION_SEND -> listOfNotNull(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                incoming.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                incoming.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+            } ?: incoming.data
+        )
+        Intent.ACTION_SEND_MULTIPLE -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            incoming.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+        } else {
+            @Suppress("DEPRECATION")
+            incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+        }
+        else -> emptyList()
+    }
+
+    private fun releasePersistedReadGrant(uri: Uri) {
+        runCatching { contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+    }
+
+    private fun releaseUnneededPersistedReadGrants(keep: Set<Uri>) {
+        contentResolver.persistedUriPermissions
+            .asSequence()
+            .filter { it.isReadPermission && it.uri !in keep }
+            .map { it.uri }
+            .forEach(::releasePersistedReadGrant)
     }
 
     private fun openDocument(documentId: String) {
@@ -447,26 +537,34 @@ class MainActivity : FragmentActivity() {
 
     companion object {
         private const val KEY_LOCK = "biometric_lock"
-        private const val MAX_INCOMING_URIS = 100
-        private const val MAX_PENDING_INCOMING_URIS = 100
+        private const val MAX_PENDING_PICKER_URIS = 100
         private const val KEY_PENDING_EXPORT_IDS = "pending_export_ids"
         private const val KEY_PENDING_PDF_IDS = "pending_pdf_ids"
-        private const val KEY_PENDING_INCOMING_URIS = "pending_incoming_uris"
+        private const val KEY_PENDING_PICKER_URIS = "pending_picker_uris"
+        private const val KEY_PENDING_EXTERNAL_SHARE_URIS = "pending_external_share_uris"
         private const val KEY_LAST_INCOMING_KEY = "last_incoming_key"
         private const val KEY_SCANNER_FILES = "scanner_files"
         private const val KEY_SCANNER_OPEN = "scanner_open"
         private const val STATE_EXPORT_IDS = "export_ids"
         private const val STATE_PDF_IDS = "pdf_ids"
-        private const val STATE_INCOMING_URIS = "incoming_uris"
+        private const val STATE_PICKER_URIS = "picker_uris"
     }
 
     private fun restorePendingState(savedInstanceState: Bundle?) {
         if (savedInstanceState == null) return
         pendingExportDocumentIds = savedInstanceState.getStringArrayList(KEY_PENDING_EXPORT_IDS).orEmpty()
         pendingPdfDocumentIds = savedInstanceState.getStringArrayList(KEY_PENDING_PDF_IDS).orEmpty()
-        pendingIncomingUris = savedInstanceState.getParcelableArrayList<Uri>(KEY_PENDING_INCOMING_URIS).orEmpty()
+        pendingPickerUris = savedInstanceState.parcelableUriList(KEY_PENDING_PICKER_URIS)
+        pendingExternalShareUris = savedInstanceState.parcelableUriList(KEY_PENDING_EXTERNAL_SHARE_URIS)
         lastIncomingIntentKey = savedInstanceState.getString(KEY_LAST_INCOMING_KEY)
         scannerFiles = savedInstanceState.getStringArrayList(KEY_SCANNER_FILES).orEmpty().map(::File)
         scannerOpen = savedInstanceState.getBoolean(KEY_SCANNER_OPEN, false)
+    }
+
+    private fun Bundle.parcelableUriList(key: String): List<Uri> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        getParcelableArrayList(key, Uri::class.java).orEmpty()
+    } else {
+        @Suppress("DEPRECATION")
+        getParcelableArrayList<Uri>(key).orEmpty()
     }
 }

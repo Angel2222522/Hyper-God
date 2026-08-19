@@ -5,7 +5,7 @@ object BackupPasswordPolicy {
     const val MIN_LENGTH = 12
 
     fun isStrong(password: String): Boolean {
-        if (password.length < MIN_LENGTH || password.distinct().size < 6) return false
+        if (password.length < MIN_LENGTH || password.toSet().size < 6) return false
         val normalized = password.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "")
         if (normalized in COMMON_PASSWORDS) return false
         val classes = listOf(

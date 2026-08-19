@@ -15,6 +15,8 @@ import java.io.File
 import java.time.LocalDate
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -23,6 +25,8 @@ import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 @RunWith(AndroidJUnit4::class)
 class BackupRoundTripTest {
@@ -185,6 +189,62 @@ class BackupRoundTripTest {
             backup.writeBytes(bytes)
             assertThrows(Exception::class.java) { runBlocking { BackupService(context).restore(backupUri, password) } }
             assertNotNull(database.documentDao().getById(documentId))
+        }
+    }
+
+    @Test
+    fun invalidImageBackupIsRejectedBeforeLiveGenerationChanges() = runBlocking {
+        val maliciousZip = context.cacheDir.resolve("share/backup-test-invalid-image.zip")
+        val encryptedBackup = context.cacheDir.resolve("share/backup-test-invalid-image.hgb").apply { createNewFile() }
+        val encryptedUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", encryptedBackup)
+        val badId = "invalid-image-document"
+        val manifest = JSONObject().apply {
+            put("formatVersion", 4)
+            put("createdAt", System.currentTimeMillis())
+            put("documents", JSONArray().put(JSONObject().apply {
+                put("id", badId)
+                put("title", "Κακόβουλη εικόνα")
+                put("originalFileName", "bad.png")
+                put("mimeType", "image/png")
+                put("pageCount", 1)
+                put("ocrText", "")
+                put("extractedMetadataJson", "")
+            }))
+            put("pages", JSONArray().put(JSONObject().apply {
+                put("documentId", badId)
+                put("pageIndex", 0)
+                put("ocrText", "")
+                put("sourceFileName", "bad.png")
+                put("mimeType", "image/png")
+            }))
+            put("cases", JSONArray())
+            put("relations", JSONArray())
+            put("events", JSONArray())
+            put("checklist", JSONArray())
+            put("reminders", JSONArray())
+        }
+        try {
+            ZipOutputStream(maliciousZip.outputStream()).use { zip ->
+                zip.putNextEntry(ZipEntry("backup.json"))
+                zip.write(manifest.toString().toByteArray())
+                zip.closeEntry()
+                zip.putNextEntry(ZipEntry("files/$badId/0.pf"))
+                zip.write("not an image".toByteArray())
+                zip.closeEntry()
+            }
+            BackupCrypto.encryptFile(maliciousZip, context, encryptedUri, password.toCharArray())
+
+            try {
+                BackupService(context).restore(encryptedUri, password)
+                fail("A non-image payload must be rejected before restore commit")
+            } catch (_: Exception) {
+                // Expected actual-byte validation failure.
+            }
+            assertNotNull(database.documentDao().getById(documentId))
+            assertEquals(true, documentRoot.isDirectory)
+        } finally {
+            maliciousZip.delete()
+            encryptedBackup.delete()
         }
     }
 }

@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.HyperGod" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">@font/noto_sans_variable</item>
+        <item name="android:colorAccent">#31559A</item>
+        <item name="android:navigationBarColor">#F7F8FC</item>
+        <item name="android:statusBarColor">#F7F8FC</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

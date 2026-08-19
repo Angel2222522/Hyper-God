@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+*/build/
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+
+# Local signing and secrets
+*.jks
+*.keystore
+keystore.properties
+
+# Generated/private files
+captures/
+.externalNativeBuild/
+.cxx/
+app/release/
+
+# Reproducibly downloaded and checksum-verified build assets
+app/src/main/assets/tessdata/*.traineddata
+app/src/main/res/font/noto_sans_variable.ttf

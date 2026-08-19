@@ -1,0 +1,191 @@
+package com.angel.hypergod.security
+
+import android.content.Context
+import android.net.Uri
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.InputStream
+import java.security.KeyStore
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.CipherInputStream
+import javax.crypto.CipherOutputStream
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+
+/** Encrypts document bytes at rest with a device-keystore protected AES key. */
+object FileCrypto {
+    private const val KEY_ALIAS = "hyper_god_document_key"
+    private val MAGIC = byteArrayOf('P'.code.toByte(), 'F'.code.toByte(), 'D'.code.toByte(), 1)
+
+    private fun key(requireExisting: Boolean = false): SecretKey {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        if (requireExisting) throw KeyUnavailableException()
+        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
+            init(
+                KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setUserAuthenticationRequired(false)
+                    .build()
+            )
+            generateKey()
+        }
+    }
+
+    fun encryptUri(context: Context, uri: Uri, destination: File): Long =
+        encryptUriWithDigest(context, uri, destination).byteCount
+
+    fun encryptUriWithDigest(context: Context, uri: Uri, destination: File): EncryptedWriteResult {
+        ensureKeyAvailableForNewDocument(context)
+        destination.parentFile?.mkdirs()
+        return context.contentResolver.openInputStream(uri)?.use { encryptWithDigest(it, destination) }
+            ?: error("Δεν ήταν δυνατή η ανάγνωση του αρχείου.")
+    }
+
+    /**
+     * A missing Keystore alias is recoverable only before the first encrypted
+     * document exists. Generating a replacement key afterwards would create a
+     * mixed-key library and make the old ciphertext permanently unreadable.
+     */
+    fun ensureKeyAvailableForNewDocument(context: Context) {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (keyStore.getKey(KEY_ALIAS, null) is SecretKey) return
+        if (containsEncryptedFile(context.filesDir)) throw KeyUnavailableException()
+        key()
+    }
+
+    fun encrypt(input: InputStream, destination: File, maxBytes: Long = MAX_DOCUMENT_BYTES): Long =
+        encryptWithDigest(input, destination, maxBytes).byteCount
+
+    fun encryptWithDigest(
+        input: InputStream,
+        destination: File,
+        maxBytes: Long = MAX_DOCUMENT_BYTES
+    ): EncryptedWriteResult {
+        require(maxBytes > 0) { "Μη έγκυρο όριο μεγέθους." }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, key())
+        }
+        val temporary = File(destination.parentFile ?: destination.absoluteFile.parentFile!!, ".${destination.name}.${System.nanoTime()}.part")
+        var copied = 0L
+        val digest = MessageDigest.getInstance("SHA-256")
+        try {
+            FileOutputStream(temporary).use { rawOut ->
+                rawOut.write(MAGIC)
+                rawOut.write(cipher.iv.size)
+                rawOut.write(cipher.iv)
+                CipherOutputStream(rawOut, cipher).use { encryptedOut ->
+                    copied = input.copyLimitedTo(encryptedOut, maxBytes, digest)
+                }
+            }
+            require(temporary.renameTo(destination)) { "Δεν ήταν δυνατή η ολοκλήρωση της κρυπτογράφησης." }
+        } finally {
+            temporary.delete()
+        }
+        return EncryptedWriteResult(copied, digest.digest().toHex())
+    }
+
+    fun decryptToTemp(source: File, destination: File): File {
+        destination.parentFile?.mkdirs()
+        val temporary = File(destination.parentFile ?: destination.absoluteFile.parentFile!!, ".${destination.name}.${System.nanoTime()}.part")
+        try {
+            FileInputStream(source).use { rawIn ->
+                val magic = ByteArray(MAGIC.size)
+                rawIn.readFully(magic)
+                require(magic.contentEquals(MAGIC)) { "Μη έγκυρο κρυπτογραφημένο αρχείο Hyper God." }
+                val ivSize = rawIn.read()
+                require(ivSize in 12..16) { "Μη έγκυρη κεφαλίδα κρυπτογραφημένου αρχείου." }
+                val iv = ByteArray(ivSize)
+                rawIn.readFully(iv)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+                    init(Cipher.DECRYPT_MODE, key(requireExisting = true), javax.crypto.spec.GCMParameterSpec(128, iv))
+                }
+                CipherInputStream(rawIn, cipher).use { decryptedIn ->
+                    FileOutputStream(temporary).use { decryptedIn.copyTo(it) }
+                }
+            }
+            require(temporary.renameTo(destination)) { "Δεν ήταν δυνατή η ολοκλήρωση της αποκρυπτογράφησης." }
+        } finally {
+            temporary.delete()
+        }
+        return destination
+    }
+
+    fun deleteRecursively(file: File) {
+        if (file.isDirectory) file.listFiles()?.forEach(::deleteRecursively)
+        file.delete()
+    }
+
+    /**
+     * Deletes a recovery/quarantine tree without silently leaving a partial
+     * generation behind. Best-effort cleanup remains available above for
+     * disposable cache files.
+     */
+    fun deleteRecursivelyStrict(file: File) {
+        if (!file.exists()) return
+        if (file.isDirectory) {
+            file.listFiles()?.forEach(::deleteRecursivelyStrict)
+        }
+        if (file.exists() && !file.delete()) {
+            throw IOException("Δεν ήταν δυνατή η διαγραφή του ${file.absolutePath}.")
+        }
+    }
+
+    fun isPrivateDocumentFile(context: Context, file: File): Boolean {
+        val root = context.filesDir.resolve("documents").canonicalFile
+        val candidate = runCatching { file.canonicalFile }.getOrNull() ?: return false
+        return candidate != root && candidate.toPath().startsWith(root.toPath())
+    }
+
+    private fun InputStream.readFully(target: ByteArray) {
+        var offset = 0
+        while (offset < target.size) {
+            val read = read(target, offset, target.size - offset)
+            require(read >= 0) { "Ατελές κρυπτογραφημένο αρχείο." }
+            offset += read
+        }
+    }
+
+    private fun InputStream.copyLimitedTo(
+        output: java.io.OutputStream,
+        maxBytes: Long,
+        digest: MessageDigest
+    ): Long {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = read(buffer)
+            if (read < 0) break
+            total += read
+            require(total <= maxBytes) { "Το αρχείο είναι υπερβολικά μεγάλο." }
+            digest.update(buffer, 0, read)
+            output.write(buffer, 0, read)
+        }
+        return total
+    }
+
+    private fun containsEncryptedFile(directory: File): Boolean {
+        return directory.listFiles().orEmpty().any { file ->
+            if (file.isDirectory) containsEncryptedFile(file) else file.isFile &&
+                (file.name.endsWith(".pf") || file.name.endsWith(".hgp"))
+        }
+    }
+
+    private const val MAX_DOCUMENT_BYTES = 512L * 1024 * 1024
+
+    data class EncryptedWriteResult(val byteCount: Long, val sha256: String)
+
+    private fun ByteArray.toHex(): String = joinToString("") { byte ->
+        "%02x".format(byte.toInt() and 0xff)
+    }
+
+    class KeyUnavailableException : IllegalStateException("Το κλειδί κρυπτογράφησης της συσκευής δεν είναι διαθέσιμο. Τα υπάρχοντα έγγραφα δεν μπορούν να αποκρυπτογραφηθούν.")
+}

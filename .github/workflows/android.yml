@@ -1,0 +1,108 @@
+name: Android build and tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "platforms;android-28" "system-images;android-28;default;x86"
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest
+
+      - name: Run lint
+        run: ./gradlew lintDebug
+
+      - name: Compile instrumentation tests
+        run: ./gradlew assembleDebugAndroidTest
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload debug APK early
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyper-god-debug-apk-early
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Run instrumentation tests on emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          # The hosted runner has no KVM access. API 35 and API 30 Google APIs
+          # images remained offline and never exposed the package service. A
+          # small API 28 default image still exercises PdfRenderer, Room and
+          # Android Keystore while avoiding the unnecessary Google-services
+          # boot cost for these tests.
+          api-level: 28
+          target: default
+          arch: x86
+          # avdmanager uses the lowercase hardware-profile identifier on the
+          # current GitHub runner SDK. The display name `Pixel_2` is not a
+          # valid device id there and prevents instrumentation from starting.
+          profile: pixel_2
+          cores: 2
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -wipe-data
+          disable-animations: true
+          # The emulator runner executes each newline in `script` in a
+          # separate shell. Keep status capture and diagnostics in one shell
+          # so a successful Gradle test run cannot turn into `exit: Illegal
+          # number`, while a real test failure still fails the job.
+          script: >-
+            sh -c 'set +e; ./gradlew connectedDebugAndroidTest --stacktrace; status=$?; adb shell am force-stop com.angel.hypergod.debug || true; adb shell monkey -p com.angel.hypergod.debug -c android.intent.category.LAUNCHER 1 || true; sleep 3; adb exec-out screencap -p > "$RUNNER_TEMP/hyper-god-light.png" || true; adb shell cmd uimode night yes || true; adb shell am force-stop com.angel.hypergod.debug || true; adb shell monkey -p com.angel.hypergod.debug -c android.intent.category.LAUNCHER 1 || true; sleep 3; adb exec-out screencap -p > "$RUNNER_TEMP/hyper-god-dark.png" || true; adb logcat -d -b all -v threadtime > "$RUNNER_TEMP/hyper-god-instrumentation-logcat.txt" || true; echo "--- Recent device logcat after instrumentation failure ---"; tail -n 400 "$RUNNER_TEMP/hyper-god-instrumentation-logcat.txt" || true; exit "$status"'
+
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyper-god-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Upload instrumentation diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyper-god-instrumentation-diagnostics
+          path: |
+            app/build/reports/androidTests/**
+            app/build/outputs/androidTest-results/**
+            ${{ runner.temp }}/hyper-god-instrumentation-logcat.txt
+            ${{ runner.temp }}/hyper-god-light.png
+            ${{ runner.temp }}/hyper-god-dark.png
+          if-no-files-found: ignore
+
+      - name: Verify unsigned release compilation
+        run: ./gradlew assembleRelease
+
+      - name: Upload Room schemas
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyper-god-room-schemas
+          path: app/schemas/
+          if-no-files-found: ignore

@@ -1,0 +1,82 @@
+{
+  "completeness": "complete",
+  "deferred": [],
+  "documentType": "codex-security.coverage",
+  "excludePaths": [
+    ".git/",
+    "app/build/",
+    "build/"
+  ],
+  "explicitExclusions": [
+    {
+      "pattern": "app/build/**",
+      "reason": "\u03a0\u03b1\u03c1\u03ac\u03b3\u03c9\u03b3\u03b1 build, \u03cc\u03c7\u03b9 \u03c0\u03b7\u03b3\u03b1\u03af\u03bf\u03c2 \u03ba\u03ce\u03b4\u03b9\u03ba\u03b1\u03c2."
+    },
+    {
+      "pattern": ".git/**",
+      "reason": "\u0395\u03c3\u03c9\u03c4\u03b5\u03c1\u03b9\u03ba\u03ac \u03b1\u03bd\u03c4\u03b9\u03ba\u03b5\u03af\u03bc\u03b5\u03bd\u03b1 Git, \u03b5\u03ba\u03c4\u03cc\u03c2 runtime \u03b5\u03c0\u03b9\u03c6\u03ac\u03bd\u03b5\u03b9\u03b1\u03c2."
+    }
+  ],
+  "includePaths": [
+    "app/",
+    "docs/",
+    "scripts/",
+    ".github/workflows/"
+  ],
+  "inventoryStrategy": "repository",
+  "mode": "repository",
+  "openQuestions": [],
+  "scanId": "scan_hyper_god_20260819_01",
+  "schemaVersion": "1.0",
+  "surfaces": [
+    {
+      "disposition": "reported",
+      "id": "surface_share_saf",
+      "label": "Exported share and SAF intake",
+      "receiptRefs": [],
+      "riskArea": "authorization and resource consumption"
+    },
+    {
+      "disposition": "reported",
+      "id": "surface_backup_restore",
+      "label": "Encrypted backup and restore",
+      "receiptRefs": [],
+      "riskArea": "generation integrity, parsing and cryptography"
+    },
+    {
+      "disposition": "reported",
+      "id": "surface_camera_fileprovider",
+      "label": "Camera and FileProvider",
+      "receiptRefs": [],
+      "riskArea": "untrusted external bytes"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_room_fts",
+      "label": "Room, FTS and CRUD",
+      "notes": "Bound Room parameters; no dynamic SQL injection path or exported database provider.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_runtime_network",
+      "label": "Runtime network and exfiltration",
+      "notes": "No INTERNET permission or runtime network client; build-time assets are pinned by immutable revision and SHA-256.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_paths_exports",
+      "label": "Archive paths, exports and sharing",
+      "notes": "Canonical containment and narrow non-exported FileProvider roots; no traversal found.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_ci_secrets",
+      "label": "CI, dependencies and release secrets",
+      "notes": "Pinned Actions and assets; no production credential or private signing key committed.",
+      "receiptRefs": []
+    }
+  ]
+}

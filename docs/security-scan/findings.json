@@ -1,0 +1,465 @@
+{
+  "documentType": "codex-security.findings",
+  "findings": [
+    {
+      "confidence": {
+        "level": "high",
+        "rationale": "Direct source-to-sink trace from exported intent parsing to state persistence and repository import."
+      },
+      "extensions": {},
+      "findingId": "csf_c5504504fc0a61cc8bfa7e0f",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:3c60b2c9a4f68efc63d75f25e10dfc65a92b1b0822a5b7a4e6f1a7f9f34be3ea"
+      },
+      "identity": {
+        "anchor": "mainactivity-share-intake"
+      },
+      "locations": [
+        {
+          "endLine": 35,
+          "path": "app/src/main/AndroidManifest.xml",
+          "role": "exported-source",
+          "startLine": 17
+        },
+        {
+          "endLine": 263,
+          "path": "app/src/main/java/com/angel/hypergod/MainActivity.kt",
+          "role": "source-to-import",
+          "startLine": 231
+        },
+        {
+          "endLine": 82,
+          "path": "app/src/main/java/com/angel/hypergod/security/PendingActivityStateStore.kt",
+          "role": "throwing-state-sink",
+          "startLine": 73
+        }
+      ],
+      "occurrenceId": "occ_0ee5a0bf722b2f21cefa5d1e",
+      "preventiveControls": [
+        "Explicit user consent",
+        "Typed Parcelable extraction",
+        "Transient external URI grants",
+        "Startup persisted-grant reconciliation"
+      ],
+      "provenance": {
+        "source": "codex-security multi-pass local review"
+      },
+      "remediation": "Validate typed content URIs/count/length before state mutation, present an explicit post-unlock Accept/Reject dialog, avoid persistable grants for external shares, and make temporary state rejection non-throwing.",
+      "remediationTests": [
+        "IncomingSharePolicyTest",
+        "PendingActivityStateStoreTest.overlongExternalStateIsRejectedWithoutThrowingOrPersisting"
+      ],
+      "ruleId": "android.exported-share.explicit-consent",
+      "severity": {
+        "level": "medium",
+        "rationale": "A foreground installed app could inject documents, exhaust grants, or repeatedly crash the locked activity.",
+        "score": 6.5,
+        "scoringSystem": "CVSS:3.1"
+      },
+      "summary": "ACTION_SEND values crossed an exported activity directly into durable import/OCR; oversized URI state could throw and persistable grants were not released on every discard path.",
+      "taxonomy": {
+        "category": "authorization-input-validation",
+        "cwe": [
+          "CWE-862",
+          "CWE-248",
+          "CWE-772"
+        ]
+      },
+      "title": "Exported share intents could crash or persist attacker-selected documents without request-specific consent",
+      "validation": {
+        "commit": "55359893e5967d96e3ea993e58e491d318076bca",
+        "evidence": [
+          "IncomingSharePolicy",
+          "IncomingShareDialog",
+          "PendingActivityStateStoreTest"
+        ],
+        "status": "remediated"
+      }
+    },
+    {
+      "confidence": {
+        "level": "high",
+        "rationale": "Byte accounting and worker scheduling were directly observable in repository, FileCrypto and OcrWorker."
+      },
+      "extensions": {},
+      "findingId": "csf_8a9730548ba054fbfce5e851",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:eb8b22cf149a4127b56d956fdb122b6c203de7750668fd0add7577b250018482"
+      },
+      "identity": {
+        "anchor": "contentprovider-import-and-ocr"
+      },
+      "locations": [
+        {
+          "endLine": 108,
+          "path": "app/src/main/java/com/angel/hypergod/data/HyperGodRepository.kt",
+          "role": "staging",
+          "startLine": 54
+        },
+        {
+          "endLine": 93,
+          "path": "app/src/main/java/com/angel/hypergod/security/FileCrypto.kt",
+          "role": "provider-stream",
+          "startLine": 46
+        },
+        {
+          "endLine": 35,
+          "path": "app/src/main/java/com/angel/hypergod/workers/OcrWorker.kt",
+          "role": "native-work",
+          "startLine": 13
+        },
+        {
+          "endLine": 67,
+          "path": "app/src/main/java/com/angel/hypergod/processing/ScannerImageProcessor.kt",
+          "role": "camera-decode",
+          "startLine": 58
+        }
+      ],
+      "occurrenceId": "occ_e746c7c95a23a790118218d3",
+      "preventiveControls": [
+        "Single import lane",
+        "Single OCR lane",
+        "Five-minute provider deadline",
+        "Thirty-minute OCR deadline",
+        "256 MiB document and 512 MiB library budgets"
+      ],
+      "provenance": {
+        "source": "codex-security multi-pass local review"
+      },
+      "remediation": "Serialize import and OCR admission, pass the remaining aggregate byte budget, preflight free space, tie provider descriptors to cancellation/deadlines, and validate camera byte/dimension/pixel bounds before UI decoding.",
+      "remediationTests": [
+        "Import byte-budget regression coverage",
+        "CI instrumentation camera/scanner smoke path"
+      ],
+      "ruleId": "android.untrusted-stream.resource-budget",
+      "severity": {
+        "level": "medium",
+        "rationale": "User-visible storage, CPU and availability impact through attacker-controlled providers or camera handlers.",
+        "score": 6.2,
+        "scoringSystem": "CVSS:3.1"
+      },
+      "summary": "Concurrent staging could exceed the document budget, provider reads could stall, camera bytes were decoded without compressed-size validation, and per-document WorkManager jobs could run native OCR concurrently.",
+      "taxonomy": {
+        "category": "resource-exhaustion",
+        "cwe": [
+          "CWE-400"
+        ]
+      },
+      "title": "Untrusted provider imports, camera results and OCR lacked aggregate concurrency and duration budgets",
+      "validation": {
+        "commit": "55359893e5967d96e3ea993e58e491d318076bca",
+        "evidence": [
+          "importSemaphore",
+          "encryptUriWithDigestCancellable",
+          "OcrWorker.processSemaphore",
+          "ScannerImageProcessor.validateCapture"
+        ],
+        "status": "remediated"
+      }
+    },
+    {
+      "confidence": {
+        "level": "high",
+        "rationale": "Multiple concrete interleavings were traced through BackupService, WorkManager, OcrWorker and the coordinator."
+      },
+      "extensions": {},
+      "findingId": "csf_c2cf60ad86fa1ced4dd48323",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:ab4b17400eb7b3caa661dbc460a50b0a3211d64dfbe259ed71942e99331073fe"
+      },
+      "identity": {
+        "anchor": "restore-journal-and-generation-swap"
+      },
+      "locations": [
+        {
+          "endLine": 445,
+          "path": "app/src/main/java/com/angel/hypergod/data/BackupService.kt",
+          "role": "journal-swap-cleanup",
+          "startLine": 332
+        },
+        {
+          "endLine": 105,
+          "path": "app/src/main/java/com/angel/hypergod/data/DataOperationCoordinator.kt",
+          "role": "insufficient-lock-scope",
+          "startLine": 72
+        },
+        {
+          "endLine": 35,
+          "path": "app/src/main/java/com/angel/hypergod/workers/OcrWorker.kt",
+          "role": "start-idle-race",
+          "startLine": 13
+        }
+      ],
+      "occurrenceId": "occ_5780f6de53db1bb6778d0737",
+      "preventiveControls": [
+        "Restore-wide maintenance mutex",
+        "Atomic reader drain",
+        "Journal operation UUID",
+        "Disabled backup/restore controls while busy"
+      ],
+      "provenance": {
+        "source": "codex-security multi-pass local review"
+      },
+      "remediation": "Add a re-entrant generation-reader lease and single maintenance owner that drains readers and holds the global mutex across validation, journaling, swap, Room commit, rollback and cleanup; cancel queued OCR only after candidate validation and await completion.",
+      "remediationTests": [
+        "DataOperationCoordinatorTest.maintenanceWaitsForExistingGenerationReader",
+        "DataOperationCoordinatorTest.nestedGenerationReadIsReentrant",
+        "BackupRoundTripTest.corruptedPortableBackupDoesNotChangeDatabase"
+      ],
+      "ruleId": "restore.generation-maintenance-barrier",
+      "severity": {
+        "level": "high",
+        "rationale": "A process interruption during overlap could remove recovery evidence and leave mixed Room/filesystem generations.",
+        "score": 8.0,
+        "scoringSystem": "CVSS:3.1"
+      },
+      "summary": "The fixed global restore journal was written outside the short mutex, cancellation was not awaited, queued OCR could start after an idle observation, and cleanup occurred after ownership was released.",
+      "taxonomy": {
+        "category": "concurrency-data-integrity",
+        "cwe": [
+          "CWE-362"
+        ]
+      },
+      "title": "Overlapping restore/backup/OCR operations could corrupt or silently replace a data generation",
+      "validation": {
+        "commit": "55359893e5967d96e3ea993e58e491d318076bca",
+        "evidence": [
+          "DataOperationCoordinator.withGenerationRead",
+          "DataOperationCoordinator.withMaintenance",
+          "operationId-bound journal clearing"
+        ],
+        "status": "remediated"
+      }
+    },
+    {
+      "confidence": {
+        "level": "high",
+        "rationale": "The non-PDF fast path and destructive post-validation swap were explicit in source."
+      },
+      "extensions": {},
+      "findingId": "csf_d72ccabe2ac8590c16517612",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:1cd5fabd8dea61f04d9587157c5c11e11bd70d836408368383c8118c5be8b022"
+      },
+      "identity": {
+        "anchor": "staged-page-precommit-validation"
+      },
+      "locations": [
+        {
+          "endLine": 575,
+          "path": "app/src/main/java/com/angel/hypergod/data/BackupService.kt",
+          "role": "incomplete-validation",
+          "startLine": 529
+        },
+        {
+          "endLine": 401,
+          "path": "app/src/main/java/com/angel/hypergod/data/BackupService.kt",
+          "role": "destructive-commit",
+          "startLine": 369
+        },
+        {
+          "endLine": 159,
+          "path": "app/src/main/java/com/angel/hypergod/data/DocumentRenderService.kt",
+          "role": "later-parser",
+          "startLine": 102
+        }
+      ],
+      "occurrenceId": "occ_abce4343bfc433569dc7c482",
+      "preventiveControls": [
+        "Actual-byte validation",
+        "Shared MIME resolver",
+        "Legacy GCM authentication",
+        "Precommit image/PDF parser budgets"
+      ],
+      "provenance": {
+        "source": "codex-security multi-pass local review"
+      },
+      "remediation": "Use one effective MIME policy everywhere; authenticate and re-encrypt every v1 envelope; decrypt every staged page and run bounded PdfRenderer or BitmapFactory bounds plus sampled-decode validation before writing the journal.",
+      "remediationTests": [
+        "BackupRoundTripTest.invalidImageBackupIsRejectedBeforeLiveGenerationChanges",
+        "BackupRoundTripTest.portableBackupRestoreRoundTripPreservesPageAndOcr"
+      ],
+      "ruleId": "restore.actual-byte-validation",
+      "severity": {
+        "level": "high",
+        "rationale": "A crafted authenticated backup could replace the entire readable library with an unreadable generation and delete the prior root.",
+        "score": 8.1,
+        "scoringSystem": "CVSS:3.1"
+      },
+      "summary": "Only PDF-labelled staged pages were opened before commit; non-PDF bytes were counted as one page, MIME decisions differed across restore/viewer/OCR, and v1 non-PDF device-bound envelopes were never authenticated.",
+      "taxonomy": {
+        "category": "integrity-input-validation",
+        "cwe": [
+          "CWE-20",
+          "CWE-354"
+        ]
+      },
+      "title": "Restore could commit undecryptable legacy envelopes or arbitrary non-PDF page bytes",
+      "validation": {
+        "commit": "55359893e5967d96e3ea993e58e491d318076bca",
+        "evidence": [
+          "ImportTypePolicy.resolvePageMime",
+          "normalizeLegacyEnvelope",
+          "validateStagedPageCounts"
+        ],
+        "status": "remediated"
+      }
+    },
+    {
+      "confidence": {
+        "level": "high",
+        "rationale": "Limits and both ZipInputStream passes were explicit and reachable after password authentication."
+      },
+      "extensions": {},
+      "findingId": "csf_101ebcf92645b6bb1270a34c",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:6398ac844acb4aceacf2c5cda8ab8cdf4cda5a79aee76ab783c2798614cad8b3"
+      },
+      "identity": {
+        "anchor": "hgb-zip-json-parser"
+      },
+      "locations": [
+        {
+          "endLine": 9,
+          "path": "app/src/main/java/com/angel/hypergod/data/BackupSizePolicy.kt",
+          "role": "oversized-policy",
+          "startLine": 5
+        },
+        {
+          "endLine": 280,
+          "path": "app/src/main/java/com/angel/hypergod/data/BackupService.kt",
+          "role": "second-expansion",
+          "startLine": 260
+        },
+        {
+          "endLine": 693,
+          "path": "app/src/main/java/com/angel/hypergod/data/BackupService.kt",
+          "role": "first-expansion",
+          "startLine": 673
+        }
+      ],
+      "occurrenceId": "occ_5fb09e6d6ba22d841b626830",
+      "preventiveControls": [
+        "10,001-entry semantic ceiling",
+        "512 MiB aggregate ceiling",
+        "16 MiB manifest ceiling",
+        "32-level JSON depth",
+        "Exact ZIP membership"
+      ],
+      "provenance": {
+        "source": "codex-security multi-pass local review"
+      },
+      "remediation": "Use ZipFile central-directory sizes, require exact manifest-derived membership, extract each expected page once, enforce ratio/entry/payload budgets, preflight JSON depth/tokens/string sizes and index descriptors by entry/document.",
+      "remediationTests": [
+        "JsonStructurePolicyTest",
+        "BackupSizePolicyTest",
+        "Hostile restore instrumentation tests"
+      ],
+      "ruleId": "backup.archive-amplification-bounds",
+      "severity": {
+        "level": "medium",
+        "rationale": "A compact attacker-created HGB could exhaust cache, heap, CPU and battery before live mutation.",
+        "score": 6.4,
+        "scoringSystem": "CVSS:3.1"
+      },
+      "summary": "The original policy allowed 100,000 entries, 2 GiB expanded payload, 64 MiB recursive JSON and two full decompression passes including unreferenced members and quadratic descriptor searches.",
+      "taxonomy": {
+        "category": "archive-resource-exhaustion",
+        "cwe": [
+          "CWE-409",
+          "CWE-400"
+        ]
+      },
+      "title": "Backup restore allowed mobile-unsafe ZIP/JSON amplification and duplicate expansion",
+      "validation": {
+        "commit": "55359893e5967d96e3ea993e58e491d318076bca",
+        "evidence": [
+          "JsonStructurePolicy",
+          "BackupSizePolicy.requireCompressionRatio",
+          "exact archive.names comparison",
+          "groupBy/associateBy indexing"
+        ],
+        "status": "remediated"
+      }
+    },
+    {
+      "confidence": {
+        "level": "high",
+        "rationale": "Direct review of BackupCrypto header/KDF/read loops and PasswordDialog keyboard configuration."
+      },
+      "extensions": {},
+      "findingId": "csf_df64136a2cb2cbc34f3174f4",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:d1b5adee7ff63098d65c794609317b3dd1fe1acf63e3216f56f47de42bc3cbcf"
+      },
+      "identity": {
+        "anchor": "backupcrypto-kdf-provider-stream"
+      },
+      "locations": [
+        {
+          "endLine": 101,
+          "path": "app/src/main/java/com/angel/hypergod/security/BackupCrypto.kt",
+          "role": "kdf-and-stream",
+          "startLine": 20
+        },
+        {
+          "endLine": 1431,
+          "path": "app/src/main/java/com/angel/hypergod/ui/HyperGodApp.kt",
+          "role": "password-input",
+          "startLine": 1410
+        }
+      ],
+      "occurrenceId": "occ_00383fc529edc8bcbeee88ab",
+      "preventiveControls": [
+        "Versioned KDF parameters",
+        "AES-256-GCM",
+        "Raw and plaintext byte ceilings",
+        "Cancellable provider descriptor",
+        "Startup plaintext cache purge"
+      ],
+      "provenance": {
+        "source": "codex-security multi-pass local review"
+      },
+      "remediation": "Version the header, raise new-backup PBKDF2 cost while retaining v1 compatibility, enforce a local strength/passphrase policy and password IME flags, and decrypt through a size-checked AssetFileDescriptor closed by cancellation with a ten-minute deadline and free-space reserve.",
+      "remediationTests": [
+        "BackupPasswordPolicyTest",
+        "BackupRoundTripTest.backupCryptoRoundTripAndWrongPasswordAreRejected"
+      ],
+      "ruleId": "backup.password-and-provider-hardening",
+      "severity": {
+        "level": "medium",
+        "rationale": "Malicious providers could stall restore, while captured exported backups with predictable passwords were exposed to cheaper offline guessing.",
+        "score": 6.0,
+        "scoringSystem": "CVSS:3.1"
+      },
+      "summary": "Raw ciphertext had no independent counter/deadline/cancellable descriptor and authentication completed only at EOF; PBKDF2 used a fixed 120,000 iterations and the IME fields were masked visually but configured as ordinary text.",
+      "taxonomy": {
+        "category": "cryptography-resource-exhaustion",
+        "cwe": [
+          "CWE-400",
+          "CWE-916",
+          "CWE-522"
+        ]
+      },
+      "title": "Backup decryption could consume unbounded provider time and new backups used an under-costed length-only password policy",
+      "validation": {
+        "commit": "55359893e5967d96e3ea993e58e491d318076bca",
+        "evidence": [
+          "PFBK2 with encoded 600,000-iteration parameter",
+          "BackupPasswordPolicy",
+          "BoundedInputStream",
+          "KeyboardType.Password"
+        ],
+        "status": "remediated"
+      }
+    }
+  ],
+  "scanId": "scan_hyper_god_20260819_01",
+  "schemaVersion": "1.0"
+}

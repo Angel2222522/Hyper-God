@@ -196,7 +196,9 @@ class BackupRoundTripTest {
 
     @Test
     fun invalidImageBackupIsRejectedBeforeLiveGenerationChanges() = runBlocking {
-        val maliciousZip = context.cacheDir.resolve("share/backup-test-invalid-image.zip")
+        val maliciousZip = context.cacheDir.resolve("share/backup-test-invalid-image.zip").apply {
+            parentFile?.mkdirs()
+        }
         val encryptedBackup = context.cacheDir.resolve("share/backup-test-invalid-image.hgb").apply { createNewFile() }
         val encryptedUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", encryptedBackup)
         val badId = "invalid-image-document"
